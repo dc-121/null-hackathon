@@ -54,6 +54,9 @@ interface Bounds {
 /** How far the cursor's repulsion reaches, in world units. */
 const CURSOR_RADIUS = 6;
 
+/** Bodies are never allowed closer than this. Roughly shoulder to shoulder. */
+const MIN_SEPARATION = 1.35;
+
 const EMITTER_SHAPES = ['drop', 'puff', 'heart', 'spark'] as const;
 
 /** Velocity carry-over per frame. High = smooth paths, slow to turn. */
@@ -557,13 +560,13 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
         }
       }
 
-      // Personal space. Sampled rather than all-pairs, but on a STABLE stride
-      // that advances every 8 frames — re-rolling neighbours every frame makes
-      // the force flicker, which is most of what read as jitter.
-      for (let s = 0; s < 5; s++) {
-        const j = (i + 1 + s * 29 + (tick >> 3)) % agents.length;
+      // Personal space, against EVERY neighbour. Sampling a handful per frame
+      // is cheap but means two agents standing on each other often simply
+      // don't check each other, which is why they interpenetrated. 120 agents
+      // is ~14k checks a frame — nothing.
+      for (let j = 0; j < agents.length; j++) {
+        if (j === i) continue;
         const other = agents[j];
-        if (!other || other === a) continue;
         const dx = a.pos.x - other.pos.x;
         const dz = a.pos.z - other.pos.z;
         const d2 = dx * dx + dz * dz;
@@ -773,6 +776,34 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
         shade.copy(skin).multiplyScalar(mesh === parts.head ? 1.1 : 1);
         mesh.setColorAt(i, shade);
       }
+    }
+
+    // Positional de-overlap. The separation force steers them apart smoothly,
+    // but it's a force — it can always be overpowered by a punch impulse, a
+    // panic bolt, or the speed regulator pulling velocity back to target. This
+    // is the constraint that actually guarantees bodies never intersect.
+    for (let i = 0; i < agents.length; i++) {
+      const a = agents[i];
+      for (let j = i + 1; j < agents.length; j++) {
+        const b = agents[j];
+        const dx = b.pos.x - a.pos.x;
+        const dz = b.pos.z - a.pos.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 >= MIN_SEPARATION * MIN_SEPARATION) continue;
+        const d = Math.sqrt(d2) || 0.0001;
+        // Split the correction between them so neither gets shoved alone.
+        const shift = (MIN_SEPARATION - d) * 0.5;
+        const nx = dx / d;
+        const nz = dz / d;
+        a.pos.x -= nx * shift;
+        a.pos.z -= nz * shift;
+        b.pos.x += nx * shift;
+        b.pos.z += nz * shift;
+      }
+      // The correction can push someone past the edge, so re-clamp.
+      a.pos.z = Math.max(bounds.zFar, Math.min(bounds.zNear, a.pos.z));
+      const lim = halfXAt(bounds, a.pos.z);
+      a.pos.x = Math.max(-lim, Math.min(lim, a.pos.x));
     }
 
     for (let i = agents.length; i < MAX_AGENTS; i++) {
