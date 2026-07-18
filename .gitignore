@@ -34,3 +34,7 @@ pnpm-debug.log*
 coverage/
 .turbo/
 .cache/
+
+# Model weights (downloaded on first run, see emotion_webcam.py)
+*.pth
+*.onnx
