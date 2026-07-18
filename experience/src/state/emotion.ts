@@ -291,13 +291,14 @@ export function clearEmotionModality(side: Side, source: string): void {
 export function setDirectEmotion(
   side: Side,
   scores: Partial<Record<Emotion, number>>,
-  confidence: number
+  confidence: number,
+  ttlMs = DIRECT_EMOTION_TTL_MS
 ): void {
   store[side].directEmotion = makeEmotionReading(
     'direct',
     scores,
     confidence,
-    DIRECT_EMOTION_TTL_MS
+    Math.max(1, ttlMs)
   );
 }
 

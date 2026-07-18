@@ -3,8 +3,12 @@ import {
   emitFrame,
   normalizeEmotionScores,
   setEmotionModality,
+  type Emotion,
   type EmotionScores,
 } from '../state/emotion.js';
+
+export const DEMO_PROOF_LINE = 'I guess the presentation is over.';
+export const DEFAULT_DEMO_EMOTION: Emotion = 'sad';
 
 export interface DemoSignalUpdate {
   face: EmotionScores;
@@ -16,6 +20,39 @@ export interface DemoSignalUpdate {
 interface DemoSignalOptions {
   face?: boolean;
   prosody?: boolean;
+  emotion?: () => Emotion;
+}
+
+const MOTION_PROFILES: Record<
+  Emotion,
+  { intensity: number; effort: number; movement: number; valence: number }
+> = {
+  happy: { intensity: 1.25, effort: 0.45, movement: 1.35, valence: 1.4 },
+  sad: { intensity: -0.35, effort: -0.2, movement: 0.22, valence: -1.25 },
+  angry: { intensity: 1.65, effort: 1.55, movement: 1.05, valence: -1.3 },
+  afraid: { intensity: 1.25, effort: 1.05, movement: 1.55, valence: -1.0 },
+  surprised: { intensity: 1.45, effort: 0.65, movement: 1.7, valence: 0.25 },
+};
+
+function peakedScores(emotion: Emotion, peak: number): EmotionScores {
+  const remainder = (1 - peak) / 4;
+  return normalizeEmotionScores({
+    happy: emotion === 'happy' ? peak : remainder,
+    sad: emotion === 'sad' ? peak : remainder,
+    angry: emotion === 'angry' ? peak : remainder,
+    afraid: emotion === 'afraid' ? peak : remainder,
+    surprised: emotion === 'surprised' ? peak : remainder,
+  });
+}
+
+/** One named, stable rehearsal signal used by both the UI and request payload. */
+export function demoSignalSnapshot(emotion: Emotion): DemoSignalUpdate {
+  return {
+    face: peakedScores(emotion, 0.86),
+    prosody: peakedScores(emotion, 0.78),
+    faceConfidence: 0.86,
+    prosodyConfidence: 0.68,
+  };
 }
 
 /**
@@ -25,40 +62,34 @@ interface DemoSignalOptions {
  */
 export function startDemoSignals(
   onUpdate: (update: DemoSignalUpdate) => void,
-  { face: useFace = true, prosody: useProsody = true }: DemoSignalOptions = {}
+  {
+    face: useFace = true,
+    prosody: useProsody = true,
+    emotion: readEmotion = () => 'happy',
+  }: DemoSignalOptions = {}
 ): () => void {
   const started = performance.now();
   const tick = () => {
     const t = (performance.now() - started) / 1000;
-    const pulse = (offset: number, speed = 1) => (Math.sin(t * speed + offset) + 1) / 2;
-    const face = normalizeEmotionScores({
-      happy: 0.12 + pulse(0.2, 0.42) * 0.42,
-      sad: 0.08 + pulse(2.8, 0.3) * 0.14,
-      angry: 0.05 + pulse(4.1, 0.55) * 0.1,
-      afraid: 0.06 + pulse(1.7, 0.64) * 0.11,
-      surprised: 0.08 + pulse(5.2, 0.78) * 0.18,
-    });
-    const prosody = normalizeEmotionScores({
-      happy: 0.15 + pulse(0.7, 0.5) * 0.28,
-      sad: 0.1 + pulse(3.1, 0.34) * 0.15,
-      angry: 0.09 + pulse(4.3, 0.6) * 0.17,
-      afraid: 0.09 + pulse(2.1, 0.72) * 0.15,
-      surprised: 0.11 + pulse(5.6, 0.83) * 0.2,
-    });
-    const faceConfidence = 0.72;
-    const prosodyConfidence = 0.38;
+    const selectedEmotion = readEmotion();
+    const { face, prosody, faceConfidence, prosodyConfidence } = (
+      demoSignalSnapshot(selectedEmotion)
+    );
     if (useFace) setEmotionModality('user', 'demo-face', face, faceConfidence);
     if (useProsody) {
       setEmotionModality('user', 'demo-prosody', prosody, prosodyConfidence);
+      const motion = MOTION_PROFILES[selectedEmotion];
+      const breathe = Math.sin(t * 2.1) * 0.12;
       emitFrame({
-        source: 'demo-prosody',
+        source: `demo-prosody-${selectedEmotion}`,
         side: 'user',
         at: performance.now(),
-        confidence: 0.4,
+        confidence: 0.68,
         channels: {
-          intensity: pulse(0, 0.8) * 2 - 0.4,
-          effort: pulse(1.3, 0.62) * 1.6 - 0.35,
-          movement: pulse(2.4, 1.05) * 1.8,
+          intensity: motion.intensity + breathe,
+          effort: motion.effort + breathe * 0.5,
+          movement: Math.max(0, motion.movement + breathe),
+          valence: motion.valence,
         },
       });
     }

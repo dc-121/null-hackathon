@@ -1,5 +1,11 @@
 # null-hackathon
 
+> **Current integrated build: [NULL MIRROR](../README.md).** This document
+> preserves the original human-simulation concept and frontend provenance. The
+> root README is the authoritative runbook for the current Gemma, HSEmotion,
+> browser-prosody, and ElevenLabs implementation, including the labeled
+> same-transcript judge proof at `/?demo=1`.
+
 **Theme: inter(action/faces).** Every "AI agents for x" release is a chat
 interface with connectors, so nothing feels special — people never see the
 magic. Show them the magic.

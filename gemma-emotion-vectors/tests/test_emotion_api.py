@@ -1,4 +1,5 @@
 import base64
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -20,7 +21,12 @@ from scripts.emotion_api import (
 )
 from scripts.emotion_trace import SpeechClient, TraceResult
 from scripts import emotion_web
-from scripts.emotion_web import ConversationRequest, ConversationResponse
+from scripts.emotion_web import (
+    API_VERSION,
+    AnalyzeRequest,
+    ConversationRequest,
+    ConversationResponse,
+)
 
 
 class TaxonomyTests(unittest.TestCase):
@@ -599,16 +605,23 @@ class PhraseTests(unittest.TestCase):
 
 class RequestValidationTests(unittest.TestCase):
     def test_typed_fallback_is_valid(self) -> None:
-        request = ConversationRequest(transcript="I am ready")
+        request = ConversationRequest(
+            api_version=API_VERSION,
+            transcript="I am ready",
+        )
         self.assertEqual(request.transcript, "I am ready")
 
     def test_audio_requires_content_type(self) -> None:
         with self.assertRaises(ValidationError):
-            ConversationRequest(audio_base64=base64.b64encode(b"audio").decode())
+            ConversationRequest(
+                api_version=API_VERSION,
+                audio_base64=base64.b64encode(b"audio").decode(),
+            )
 
     def test_transcript_and_audio_are_mutually_exclusive(self) -> None:
         with self.assertRaises(ValidationError):
             ConversationRequest(
+                api_version=API_VERSION,
                 transcript="hello",
                 audio_base64=base64.b64encode(b"audio").decode(),
                 audio_content_type="audio/webm",
@@ -617,16 +630,79 @@ class RequestValidationTests(unittest.TestCase):
     def test_modality_scores_require_confidence(self) -> None:
         with self.assertRaises(ValidationError):
             ConversationRequest(
-                transcript="hello", face_scores={"happy": 1.0}
+                api_version=API_VERSION,
+                transcript="hello",
+                face_scores={"happy": 1.0},
             )
 
     def test_unknown_emotion_is_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             ConversationRequest(
+                api_version=API_VERSION,
                 transcript="hello",
                 face_scores={"confused": 1.0},
                 face_confidence=0.8,
             )
+
+    def test_request_contract_rejects_unknown_fields_and_version_mismatch(self) -> None:
+        with self.assertRaises(ValidationError):
+            ConversationRequest.model_validate(
+                {
+                    "api_version": API_VERSION,
+                    "transcript": "hello",
+                    "synthesize_speach": False,
+                }
+            )
+        with self.assertRaises(ValidationError):
+            AnalyzeRequest.model_validate({"prompt": "hello", "mystery": True})
+        with self.assertRaises(ValidationError):
+            ConversationRequest(
+                transcript="hello",
+                api_version="stale-client",
+            )
+
+    def test_api_version_is_visible_in_config_and_request_contract(self) -> None:
+        self.assertEqual(emotion_web.config()["api_version"], API_VERSION)
+        with self.assertRaises(ValidationError):
+            ConversationRequest(transcript="hello")
+        self.assertEqual(
+            ConversationRequest(
+                api_version=API_VERSION,
+                transcript="hello",
+            ).api_version,
+            API_VERSION,
+        )
+
+
+class StartupPreflightTests(unittest.TestCase):
+    def test_port_reservation_reports_bind_failure_and_closes_socket(self) -> None:
+        server_socket = Mock()
+        server_socket.bind.side_effect = OSError("address already in use")
+        with patch.object(
+            emotion_web.socket,
+            "socket",
+            return_value=server_socket,
+        ):
+            with self.assertRaisesRegex(SystemExit, "address already in use"):
+                emotion_web.reserve_server_socket("127.0.0.1", 8766)
+
+        server_socket.close.assert_called_once_with()
+
+    def test_occupied_port_fails_before_model_load(self) -> None:
+        args = SimpleNamespace(host="127.0.0.1", port=8766, no_open=True)
+        with (
+            patch.object(emotion_web, "parse_args", return_value=args),
+            patch.object(
+                emotion_web,
+                "reserve_server_socket",
+                side_effect=SystemExit("Cannot start server: occupied"),
+            ),
+            patch.object(emotion_web, "load_runtime") as load_runtime,
+        ):
+            with self.assertRaisesRegex(SystemExit, "Cannot start server"):
+                emotion_web.main()
+
+        load_runtime.assert_not_called()
 
 
 class ElevenLabsClientTests(unittest.TestCase):
@@ -767,11 +843,29 @@ class ConversationContractTests(unittest.TestCase):
                     return_value=(tagged, phrases, [(start, start + len(text))]),
                 ),
             ):
+                silent_response = emotion_web.conversation(
+                    ConversationRequest(
+                        api_version=API_VERSION,
+                        transcript="Today is looking up",
+                        synthesize_speech=False,
+                    )
+                )
+                silent_validated = ConversationResponse.model_validate(
+                    silent_response
+                )
+                self.assertIsNone(silent_validated.speech_id)
+                self.assertIsNone(silent_validated.timings.speech_seconds)
+                speech.synthesize_with_timestamps.assert_not_called()
+
                 response = emotion_web.conversation(
-                    ConversationRequest(transcript="Today is looking up")
+                    ConversationRequest(
+                        api_version=API_VERSION,
+                        transcript="Today is looking up",
+                    )
                 )
 
             validated = ConversationResponse.model_validate(response)
+            self.assertEqual(validated.api_version, API_VERSION)
             self.assertIsNotNone(validated.speech_id)
             self.assertEqual(validated.human.dominant, "happy")
             self.assertEqual(

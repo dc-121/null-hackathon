@@ -11,6 +11,7 @@ from dataclasses import asdict
 import logging
 import os
 from pathlib import Path
+import socket
 import threading
 from time import perf_counter
 from typing import Any, Literal
@@ -22,7 +23,7 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import torch
 import uvicorn
 
@@ -112,9 +113,12 @@ ALLOWED_AUDIO_TYPES = {
     "video/webm",
 }
 SharedEmotion = Literal["happy", "sad", "angry", "afraid", "surprised"]
+API_VERSION = "2026-07-18.1"
 
 
 class AnalyzeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     prompt: str = Field(min_length=1, max_length=4_000)
     max_new_tokens: int = Field(default=64, ge=1, le=160)
     delivery_mode: str = Field(default="raw", pattern="^(raw|safe)$")
@@ -122,6 +126,9 @@ class AnalyzeRequest(BaseModel):
 
 
 class ConversationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_version: Literal["2026-07-18.1"]
     transcript: str | None = Field(default=None, max_length=4_000)
     audio_base64: str | None = Field(default=None, max_length=36_000_000)
     audio_content_type: str | None = Field(default=None, max_length=80)
@@ -129,6 +136,9 @@ class ConversationRequest(BaseModel):
     face_confidence: float | None = Field(default=None, ge=0, le=1)
     prosody_scores: dict[str, float] | None = None
     prosody_confidence: float | None = Field(default=None, ge=0, le=1)
+    # Counterfactual proof runs still need the real response/vector trace, but
+    # only the adapted side should spend latency and quota on ElevenLabs audio.
+    synthesize_speech: bool = True
 
     @field_validator("face_scores", "prosody_scores")
     @classmethod
@@ -244,6 +254,7 @@ class ResponseContextResponse(BaseModel):
 
 
 class ConversationResponse(BaseModel):
+    api_version: Literal["2026-07-18.1"]
     transcript: str
     human: HumanResponse
     response_context: ResponseContextResponse
@@ -286,6 +297,7 @@ def index() -> FileResponse:
 @app.get("/api/config")
 def config() -> dict:
     return {
+        "api_version": API_VERSION,
         "model": "google/gemma-4-E4B-it",
         "layer": 28,
         "emotions": runtime.names,
@@ -496,7 +508,7 @@ def conversation(request: ConversationRequest) -> dict:
 
     speech_id: str | None = None
     speech_seconds: float | None = None
-    if runtime.speech is not None and tagged_text:
+    if request.synthesize_speech and runtime.speech is not None and tagged_text:
         speech_started = perf_counter()
         try:
             with runtime.audio_lock:
@@ -535,6 +547,7 @@ def conversation(request: ConversationRequest) -> dict:
             runtime.diagnostics.popitem(last=False)
 
     return {
+        "api_version": API_VERSION,
         "transcript": transcript,
         "human": {
             "scores": fused.scores,
@@ -587,48 +600,74 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def reserve_server_socket(host: str, port: int) -> socket.socket:
+    """Bind the HTTP port before loading Gemma and keep it reserved."""
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    server_socket = socket.socket(family, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        server_socket.bind((host, port))
+    except OSError as error:
+        server_socket.close()
+        raise SystemExit(
+            f"Cannot start server on {host}:{port}: {error}"
+        ) from error
+    server_socket.set_inheritable(True)
+    return server_socket
+
+
 def main() -> None:
     args = parse_args()
     load_dotenv(PROJECT_DIR / ".env")
-    (
-        model,
-        tokenizer,
-        names,
-        vectors,
-        neutral_mean,
-        neutral_std,
-        load_seconds,
-    ) = load_runtime()
-    runtime.model = model
-    runtime.tokenizer = tokenizer
-    runtime.names = names
-    runtime.vectors = vectors
-    runtime.neutral_mean = neutral_mean
-    runtime.neutral_std = neutral_std
-    api_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
-    if api_key:
-        runtime.speech = SpeechClient(
-            api_key=api_key,
-            voice_id=DEFAULT_VOICE_ID,
-            model_id=DEFAULT_TTS_MODEL,
-            output_format=DEFAULT_OUTPUT_FORMAT,
-            stability=0.25,
-        )
-    else:
-        LOGGER.warning(
-            "ELEVENLABS_API_KEY is unset; typed conversation works without "
-            "transcription or speech"
-        )
-    url = f"http://{args.host}:{args.port}"
-    frontend = "Emotion Mirror" if WEB_DIR == EXPERIENCE_DIST_DIR else "legacy lab"
-    print(
-        f"Model ready in {load_seconds:.2f}s · serving {frontend} · opening {url}"
-    )
-    if not args.no_open:
-        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    server_socket = reserve_server_socket(args.host, args.port)
     try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+        (
+            model,
+            tokenizer,
+            names,
+            vectors,
+            neutral_mean,
+            neutral_std,
+            load_seconds,
+        ) = load_runtime()
+        runtime.model = model
+        runtime.tokenizer = tokenizer
+        runtime.names = names
+        runtime.vectors = vectors
+        runtime.neutral_mean = neutral_mean
+        runtime.neutral_std = neutral_std
+        api_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+        if api_key:
+            runtime.speech = SpeechClient(
+                api_key=api_key,
+                voice_id=DEFAULT_VOICE_ID,
+                model_id=DEFAULT_TTS_MODEL,
+                output_format=DEFAULT_OUTPUT_FORMAT,
+                stability=0.25,
+            )
+        else:
+            LOGGER.warning(
+                "ELEVENLABS_API_KEY is unset; typed conversation works without "
+                "transcription or speech"
+            )
+        url = f"http://{args.host}:{args.port}"
+        frontend = "Null Mirror" if WEB_DIR == EXPERIENCE_DIST_DIR else "legacy lab"
+        print(
+            f"Model ready in {load_seconds:.2f}s · serving {frontend} · opening {url}"
+        )
+        if not args.no_open:
+            threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=args.host,
+                port=args.port,
+                log_level="warning",
+            )
+        )
+        server.run(sockets=[server_socket])
     finally:
+        server_socket.close()
         if runtime.speech is not None:
             runtime.speech.close()
 

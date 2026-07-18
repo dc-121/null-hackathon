@@ -19,7 +19,13 @@ import {
   type ConversationRequest,
   type ConversationResponse,
 } from './sources/api.js';
-import { startDemoSignals, type DemoSignalUpdate } from './sources/demo.js';
+import {
+  DEFAULT_DEMO_EMOTION,
+  DEMO_PROOF_LINE,
+  demoSignalSnapshot,
+  startDemoSignals,
+  type DemoSignalUpdate,
+} from './sources/demo.js';
 import { startFaceSource, type FaceSourceUpdate } from './sources/face.js';
 import {
   startProsodySource,
@@ -40,7 +46,7 @@ type Phase =
   | 'complete'
   | 'error';
 
-type SignalStatus = 'off' | 'waiting' | 'live' | 'no-face' | 'unavailable' | 'demo';
+type SignalStatus = 'off' | 'waiting' | 'live' | 'no-face' | 'unavailable' | 'demo' | 'withheld';
 
 interface SignalView {
   status: SignalStatus;
@@ -65,6 +71,15 @@ interface FaceCaptureAccumulator {
   confidence: number;
   scores: EmotionScores;
 }
+
+interface CounterfactualProof {
+  transcript: string;
+  emotion: Emotion;
+  baseline: ConversationResponse;
+  adapted: ConversationResponse | null;
+}
+
+type ProofStage = 'baseline' | 'adapted' | 'failed' | null;
 
 const ZERO_SCORES = normalizeEmotionScores({});
 const UNIFORM_SCORES = normalizeEmotionScores(
@@ -104,6 +119,7 @@ const PHASE_COPY: Record<Phase, string> = {
 
 const PIPELINE = ['listen', 'transcribe', 'Gemma', 'speak'] as const;
 const MAX_RECORDING_SECONDS = 45;
+const MODEL_RESULT_HOLD_MS = 5 * 60 * 1000;
 
 function phasePosition(phase: Phase): number {
   if (phase === 'listening') return 0;
@@ -116,6 +132,20 @@ function phasePosition(phase: Phase): number {
 
 function confidenceLabel(value: number): string {
   return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function resetAudioElement(audio: HTMLAudioElement | null): void {
+  if (!audio) return;
+  audio.pause();
+  try {
+    audio.currentTime = 0;
+  } catch {
+    // A stream without seek metadata can still be discarded safely.
+  }
+  if (audio.getAttribute('src')) {
+    audio.removeAttribute('src');
+    audio.load();
+  }
 }
 
 function strongestEmotionalPhrase(
@@ -139,7 +169,9 @@ function showModelPhrase(phrase: ConversationPhrase | null | undefined): void {
   // Phrase scores already preserve the all-nine mass outside the shared five.
   // Use one authoritative categorical reading; intensity controls energy and
   // presentation separately so it cannot attenuate the population twice.
-  setDirectEmotion('model', phrase.scores, 1);
+  // Keep the final measured tone visible while a judge discusses the result.
+  // Every new turn and preset change clears it explicitly.
+  setDirectEmotion('model', phrase.scores, 1, MODEL_RESULT_HOLD_MS);
 }
 
 function emitModelExpression(phrase: ConversationPhrase): void {
@@ -217,6 +249,8 @@ function EmotionBars({ scores, active = true }: { scores: EmotionScores; active?
 function SignalChip({ label, signal, caveat }: { label: string; signal: SignalView; caveat?: string }) {
   const status = signal.status === 'live' || signal.status === 'demo'
     ? `${signal.dominant ? EMOTION_LABELS[signal.dominant] : 'mixed'} · ${confidenceLabel(signal.confidence)}`
+    : signal.status === 'withheld'
+      ? 'withheld for control'
     : signal.status === 'no-face'
       ? 'no face'
       : signal.status === 'unavailable'
@@ -303,6 +337,8 @@ export function App() {
   const demoProsodyStopRef = useRef<(() => void) | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const requestIdRef = useRef(0);
+  const demoEmotionRef = useRef<Emotion>(DEFAULT_DEMO_EMOTION);
+  const judgeProofActiveRef = useRef(false);
   const latestFaceRef = useRef<SignalView>({
     status: 'off', scores: ZERO_SCORES, confidence: 0, dominant: null,
   });
@@ -329,6 +365,10 @@ export function App() {
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
   const [demoFaceActive, setDemoFaceActive] = useState(false);
   const [demoProsodyActive, setDemoProsodyActive] = useState(false);
+  const [demoEmotion, setDemoEmotion] = useState<Emotion>(DEFAULT_DEMO_EMOTION);
+  const [judgeProofActive, setJudgeProofActive] = useState(false);
+  const [counterfactualProof, setCounterfactualProof] = useState<CounterfactualProof | null>(null);
+  const [proofStage, setProofStage] = useState<ProofStage>(null);
 
   useEffect(() => {
     let frame = 0;
@@ -384,7 +424,7 @@ export function App() {
         scores: update.face,
         confidence: update.faceConfidence,
         dominant: dominantEmotion(update.face),
-        detail: 'Deterministic opt-in rehearsal signal; not a camera inference.',
+        detail: `${EMOTION_LABELS[demoEmotionRef.current]} injected rehearsal signal; not a camera inference.`,
       };
       recordFaceFrame(signal);
       latestFaceRef.current = signal;
@@ -395,7 +435,7 @@ export function App() {
         scores: update.prosody,
         confidence: update.prosodyConfidence,
         dominant: dominantEmotion(update.prosody),
-        detail: 'Deterministic opt-in rehearsal signal; not microphone analysis.',
+        detail: `${EMOTION_LABELS[demoEmotionRef.current]} injected rehearsal signal; not microphone analysis.`,
       };
       latestProsodyRef.current = signal;
       setProsodySignal(signal);
@@ -406,7 +446,11 @@ export function App() {
     if (!demoRequested || demoFaceStopRef.current) return;
     demoFaceStopRef.current = startDemoSignals(
       (update) => updateDemoSignal(update, 'face'),
-      { face: true, prosody: false }
+      {
+        face: true,
+        prosody: false,
+        emotion: () => demoEmotionRef.current,
+      }
     );
     setDemoFaceActive(true);
   }, [demoRequested, updateDemoSignal]);
@@ -415,10 +459,40 @@ export function App() {
     if (!demoRequested || demoProsodyStopRef.current) return;
     demoProsodyStopRef.current = startDemoSignals(
       (update) => updateDemoSignal(update, 'prosody'),
-      { face: false, prosody: true }
+      {
+        face: false,
+        prosody: true,
+        emotion: () => demoEmotionRef.current,
+      }
     );
     setDemoProsodyActive(true);
   }, [demoRequested, updateDemoSignal]);
+
+  const withholdDemoSignals = useCallback(() => {
+    demoFaceStopRef.current?.();
+    demoFaceStopRef.current = null;
+    demoProsodyStopRef.current?.();
+    demoProsodyStopRef.current = null;
+    setDemoFaceActive(false);
+    setDemoProsodyActive(false);
+    const withheldFace: SignalView = {
+      status: 'withheld',
+      scores: ZERO_SCORES,
+      confidence: 0,
+      dominant: null,
+      detail: 'Deliberately withheld from the transcript-only control.',
+    };
+    const withheldProsody: SignalView = {
+      ...withheldFace,
+      scores: UNIFORM_SCORES,
+    };
+    latestFaceRef.current = withheldFace;
+    latestProsodyRef.current = withheldProsody;
+    setFaceSignal(withheldFace);
+    setProsodySignal(withheldProsody);
+    setPermissionNote('Control run: the selected face and voice context are deliberately withheld.');
+    clearDirectEmotion('user');
+  }, []);
 
   const onFaceUpdate = useCallback((update: FaceSourceUpdate) => {
     if (update.state !== 'unavailable' && demoFaceStopRef.current) {
@@ -443,6 +517,8 @@ export function App() {
   }, []);
 
   const startExperience = useCallback(async () => {
+    judgeProofActiveRef.current = false;
+    setJudgeProofActive(false);
     setPhase('requesting');
     setError(null);
     setPermissionNote(null);
@@ -524,6 +600,43 @@ export function App() {
     }
   }, [demoRequested, startDemoFace, startDemoProsody]);
 
+  const chooseDemoEmotion = useCallback((emotion: Emotion) => {
+    demoEmotionRef.current = emotion;
+    setDemoEmotion(emotion);
+    const snapshot = demoSignalSnapshot(emotion);
+    updateDemoSignal(snapshot, 'face');
+    updateDemoSignal(snapshot, 'prosody');
+    resetAudioElement(audioRef.current);
+    clearDirectEmotion('user');
+    clearDirectEmotion('model');
+    activePhraseRef.current = -1;
+    setActivePhrase(-1);
+    setConversation(null);
+    setCounterfactualProof(null);
+    setProofStage(null);
+    setTypedText(DEMO_PROOF_LINE);
+    setNeedsPlay(false);
+    setVoiceNotice(null);
+    setError(null);
+    setPermissionNote(
+      `Controlled rehearsal mode: labeled ${EMOTION_LABELS[emotion].toLowerCase()} face and voice test signals are injected.`
+    );
+    setPhase('ready');
+  }, [updateDemoSignal]);
+
+  const openJudgeProof = useCallback(() => {
+    judgeProofActiveRef.current = true;
+    setJudgeProofActive(true);
+    chooseDemoEmotion(DEFAULT_DEMO_EMOTION);
+    setStarted(true);
+    setRecorderAvailable(false);
+    setPermissionNote(
+      'Controlled rehearsal mode: face and voice are injected test signals, permanently labeled below.'
+    );
+    startDemoFace();
+    startDemoProsody();
+  }, [chooseDemoEmotion, startDemoFace, startDemoProsody]);
+
   const signalsForRequest = useCallback((
     payload: ConversationRequest,
     prosodyOverride?: { scores: EmotionScores; confidence: number },
@@ -545,6 +658,29 @@ export function App() {
     return payload;
   }, []);
 
+  const presentConversation = useCallback((result: ConversationResponse) => {
+    // The backend result is already the authoritative fusion of language,
+    // face and utterance-averaged prosody. Keep it direct so raw modalities
+    // are not counted a second time.
+    if (judgeProofActiveRef.current) {
+      // Rehearsal presets are stable, continuously refreshed sources. A
+      // decaying turn snapshot would make the labeled preset look weaker
+      // while judges discuss the result.
+      clearDirectEmotion('user');
+    } else {
+      setDirectEmotion('user', result.human.scores, result.human.confidence);
+    }
+    setConversation(result);
+    const representative = strongestEmotionalPhrase(result.phrases);
+    showModelPhrase(representative?.phrase);
+    if (result.speechId) {
+      setPhase('speaking');
+    } else {
+      setVoiceNotice('Expressive voice is unavailable; the returned emotion trace is still shown.');
+      setPhase('complete');
+    }
+  }, []);
+
   const submitConversation = useCallback(async (
     payload: ConversationRequest,
     startsWithTranscription: boolean
@@ -553,20 +689,14 @@ export function App() {
     const controller = new AbortController();
     requestRef.current = controller;
     const requestId = ++requestIdRef.current;
-    const oldAudio = audioRef.current;
-    if (oldAudio) {
-      oldAudio.pause();
-      try {
-        oldAudio.currentTime = 0;
-      } catch {
-        // A stream without seek metadata can still be safely paused.
-      }
-    }
+    resetAudioElement(audioRef.current);
     clearDirectEmotion('user');
     clearDirectEmotion('model');
     activePhraseRef.current = -1;
     setActivePhrase(-1);
     setConversation(null);
+    setCounterfactualProof(null);
+    setProofStage(null);
     setNeedsPlay(false);
     setVoiceNotice(null);
     setError(null);
@@ -574,19 +704,7 @@ export function App() {
     try {
       const result = await converse(payload, controller.signal);
       if (requestIdRef.current !== requestId) return;
-      // The backend result is already the authoritative fusion of language,
-      // face and utterance-averaged prosody. Keep it direct so raw modalities
-      // are not counted a second time.
-      setDirectEmotion('user', result.human.scores, result.human.confidence);
-      setConversation(result);
-      const representative = strongestEmotionalPhrase(result.phrases);
-      showModelPhrase(representative?.phrase);
-      if (result.speechId) {
-        setPhase('speaking');
-      } else {
-        setVoiceNotice('Expressive voice is unavailable; the returned emotion trace is still shown.');
-        setPhase('complete');
-      }
+      presentConversation(result);
     } catch (requestError) {
       if (controller.signal.aborted) return;
       const message = requestError instanceof Error ? requestError.message : 'Conversation request failed.';
@@ -595,7 +713,7 @@ export function App() {
     } finally {
       if (requestRef.current === controller) requestRef.current = null;
     }
-  }, []);
+  }, [presentConversation]);
 
   const submitRecording = useCallback(async (
     blob: Blob,
@@ -624,6 +742,7 @@ export function App() {
       return;
     }
     const mimeType = mediaRecorderMime();
+    resetAudioElement(audioRef.current);
     clearDirectEmotion('user');
     clearDirectEmotion('model');
     activePhraseRef.current = -1;
@@ -722,9 +841,106 @@ export function App() {
     void submitConversation(signalsForRequest({ transcript }), false);
   }, [phase, recording, signalsForRequest, submitConversation, typedText]);
 
+  const runCounterfactualProof = useCallback(async () => {
+    const proofRunning = proofStage === 'baseline' || proofStage === 'adapted';
+    if (!judgeProofActive || proofRunning) return;
+    if (
+      recording || phase === 'requesting' || phase === 'transcribing'
+      || phase === 'thinking' || phase === 'speaking' || phase === 'holding'
+      || phase === 'awaiting-audio'
+    ) return;
+    const transcript = typedText.trim() || DEMO_PROOF_LINE;
+    const emotion = demoEmotionRef.current;
+    const injected = demoSignalSnapshot(emotion);
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const requestId = ++requestIdRef.current;
+    resetAudioElement(audioRef.current);
+    clearDirectEmotion('user');
+    clearDirectEmotion('model');
+    activePhraseRef.current = -1;
+    setActivePhrase(-1);
+    setConversation(null);
+    setCounterfactualProof(null);
+    setNeedsPlay(false);
+    setVoiceNotice(null);
+    setError(null);
+    withholdDemoSignals();
+    setProofStage('baseline');
+    setPhase('thinking');
+    let baseline: ConversationResponse | null = null;
+    try {
+      baseline = await converse(
+        { transcript, synthesize_speech: false },
+        controller.signal
+      );
+      if (requestIdRef.current !== requestId) return;
+      setCounterfactualProof({ transcript, emotion, baseline, adapted: null });
+      startDemoFace();
+      startDemoProsody();
+      setPermissionNote(
+        `Adapted run: labeled ${EMOTION_LABELS[emotion].toLowerCase()} face and voice test signals are now injected.`
+      );
+      setProofStage('adapted');
+
+      const adapted = await converse(
+        {
+          transcript,
+          face_scores: injected.face,
+          face_confidence: injected.faceConfidence,
+          prosody_scores: injected.prosody,
+          prosody_confidence: injected.prosodyConfidence,
+          synthesize_speech: true,
+        },
+        controller.signal
+      );
+      if (requestIdRef.current !== requestId) return;
+      setCounterfactualProof({ transcript, emotion, baseline, adapted });
+      presentConversation(adapted);
+    } catch (proofError) {
+      if (controller.signal.aborted) return;
+      setError(
+        baseline
+          ? 'The transcript-only control is preserved, but the adapted half of the proof could not complete.'
+          : proofError instanceof Error
+            ? proofError.message
+            : 'The counterfactual proof could not complete.'
+      );
+      if (baseline) setProofStage('failed');
+      else {
+        startDemoFace();
+        startDemoProsody();
+        setPermissionNote(
+          'Controlled rehearsal mode: face and voice are injected test signals, permanently labeled below.'
+        );
+        setProofStage(null);
+      }
+      setPhase('error');
+    } finally {
+      if (requestRef.current === controller) requestRef.current = null;
+      setProofStage((current) => current === 'failed' ? current : null);
+    }
+  }, [
+    judgeProofActive,
+    phase,
+    presentConversation,
+    proofStage,
+    recording,
+    startDemoFace,
+    startDemoProsody,
+    typedText,
+    withholdDemoSignals,
+  ]);
+
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || !conversation?.speechId) return;
+    if (!audio) return;
+    if (!conversation?.speechId) {
+      resetAudioElement(audio);
+      return;
+    }
+    const audioSource = `/api/audio/${encodeURIComponent(conversation.speechId)}`;
     const representative = strongestEmotionalPhrase(conversation.phrases);
     let animationFrame = 0;
     let holdTimer = 0;
@@ -794,7 +1010,7 @@ export function App() {
     audio.addEventListener('pause', onPause);
     audio.addEventListener('ended', onEnded);
     audio.addEventListener('error', onError);
-    audio.src = `/api/audio/${encodeURIComponent(conversation.speechId)}`;
+    audio.src = audioSource;
     audio.load();
     void audio.play().catch(() => {
       if (playbackFailed || audio.error) return;
@@ -808,6 +1024,7 @@ export function App() {
       audio.removeEventListener('pause', onPause);
       audio.removeEventListener('ended', onEnded);
       audio.removeEventListener('error', onError);
+      if (audio.getAttribute('src') === audioSource) resetAudioElement(audio);
     };
   }, [conversation]);
 
@@ -860,6 +1077,38 @@ export function App() {
     : modelCrowd.confidence;
   const displayedModelScores = displayedModelPhrase?.scores ?? modelCrowd.scores;
   const responseContext = conversation?.responseContext;
+  const proofBaselineContext = counterfactualProof?.baseline.responseContext;
+  const proofAdaptedContext = counterfactualProof?.adapted?.responseContext;
+  const proofBaselinePlan = proofBaselineContext?.strategy.replace('-', ' ').toUpperCase() ?? 'UNAVAILABLE';
+  const proofAdaptedPlan = proofAdaptedContext?.strategy.replace('-', ' ').toUpperCase() ?? (
+    proofStage === 'adapted' ? 'RUNNING…' : proofStage === 'failed' ? 'FAILED' : 'UNAVAILABLE'
+  );
+  const proofPlanChanged = Boolean(
+    counterfactualProof?.adapted
+    && proofBaselineContext?.strategy
+    && proofAdaptedContext?.strategy
+    && proofBaselineContext.strategy !== proofAdaptedContext.strategy
+  );
+  const proofReplyChanged = Boolean(
+    counterfactualProof?.adapted
+    && counterfactualProof.baseline.response.trim().replace(/\s+/g, ' ').toLowerCase()
+      !== counterfactualProof.adapted.response.trim().replace(/\s+/g, ' ').toLowerCase()
+  );
+  const proofOutcomeCopy = !counterfactualProof?.adapted
+    ? proofStage === 'failed'
+      ? 'ADAPTED RUN FAILED · CONTROL PRESERVED · RETRY'
+      : 'CONTROL CAPTURED · ADDING NONVERBAL CONTEXT…'
+    : proofPlanChanged && proofReplyChanged
+      ? 'PLAN CHANGED · REPLY CHANGED'
+      : proofPlanChanged
+        ? 'PLAN CHANGED'
+        : proofReplyChanged
+          ? 'REPLY CHANGED WITH THE SAME PLAN'
+          : 'CONTEXT CONFIRMED THE SAME OUTCOME';
+  const proofShiftCopy = proofAdaptedContext?.nonverbalShift !== null
+    && proofAdaptedContext?.nonverbalShift !== undefined
+    ? ` · ${confidenceLabel(proofAdaptedContext.nonverbalShift)} SIGNAL-DISTRIBUTION SHIFT`
+    : '';
   const nonverbalSourceLabel = responseContext?.sources
     .map((source) => source === 'face' ? 'FACE' : 'VOICE')
     .join(' + ') ?? '';
@@ -923,7 +1172,7 @@ export function App() {
             ? 'SENSORS PRIMARY'
             : responseContext.effect === 'language-mixed'
               ? `WORDS MIXED · SHIFT ${confidenceLabel(responseContext.nonverbalShift ?? 0)}`
-            : `CONTEXT SHIFT ${confidenceLabel(responseContext.nonverbalShift ?? 0)}`;
+            : `SIGNAL SHIFT ${confidenceLabel(responseContext.nonverbalShift ?? 0)}`;
   const languageModality = conversation?.human.modalities.language;
   const languageSignal: SignalView | null = languageModality?.scores && languageModality.confidence !== undefined
     ? {
@@ -937,23 +1186,39 @@ export function App() {
       }
     : null;
   const demoActive = demoFaceActive || demoProsodyActive;
-  const phaseCopy = phase === 'ready' && !recorderAvailable
-    ? 'Ready. Use the typed fallback below to begin.'
-    : PHASE_COPY[phase];
+  const phaseCopy = proofStage === 'baseline'
+    ? 'Counterfactual 1/2 — Gemma is answering from the transcript alone…'
+    : proofStage === 'adapted'
+      ? `Counterfactual 2/2 — adding the injected ${demoEmotion} face + voice context…`
+      : phase === 'ready' && !recorderAvailable
+        ? judgeProofActive
+          ? 'Judge proof ready. Same transcript; only the labeled emotion signal will change.'
+          : demoActive
+            ? 'Ready with a permanently labeled rehearsal fallback. Typed conversation remains available.'
+          : 'Ready. Use the typed fallback below to begin.'
+        : PHASE_COPY[phase];
 
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Emotion Mirror home">
+        <a className="brand" href="/" aria-label="Null Mirror home">
           <span aria-hidden="true">◌</span>
-          <div><strong>EMOTION MIRROR</strong><small>visible adaptive conversation</small></div>
+          <div><strong>NULL MIRROR</strong><small>the context speech-to-text deletes</small></div>
         </a>
         <Pipeline phase={phase} />
         <div className="topbar-badges">
           <span className="local-badge">LOCAL CAMERA PIPELINE</span>
           {demoRequested ? (
-            <span className={`demo-badge${demoActive ? ' is-active' : ''}`}>
-              DEMO SIGNAL {demoActive ? 'ACTIVE' : 'OPT-IN'}
+            <span className={`demo-badge${demoActive || judgeProofActive ? ' is-active' : ''}`}>
+              {proofStage === 'baseline'
+                ? 'CONTEXT WITHHELD · CONTROL'
+                : judgeProofActive && demoActive
+                  ? `INJECTED ${EMOTION_LABELS[demoEmotion]} SIGNAL`
+                  : demoActive
+                    ? 'LABELED DEMO FALLBACK'
+                    : judgeProofActive
+                      ? 'JUDGE PROOF READY'
+                      : 'JUDGE PROOF OPT-IN'}
             </span>
           ) : null}
         </div>
@@ -968,7 +1233,7 @@ export function App() {
         <CrowdPane
           side="user"
           label="01 · human signal"
-          title="What the system can sense in you"
+          title="What the system observed"
           emotion={userCrowd.dominant}
           confidence={userCrowd.confidence}
         >
@@ -1006,7 +1271,7 @@ export function App() {
             aria-pressed={recording}
           >
             <span className="talk-icon" aria-hidden="true">{recording ? '■' : '●'}</span>
-            <strong>{recording ? 'Stop & understand' : 'Speak to the mirror'}</strong>
+            <strong>{recording ? 'Stop & respond' : 'Speak to the mirror'}</strong>
             <small>
               {recording
                 ? `${recordingSeconds}s / ${MAX_RECORDING_SECONDS}s · auto-sends at limit`
@@ -1021,10 +1286,57 @@ export function App() {
           title="What Gemma is expressing back"
           emotion={displayedModelEmotion}
           confidence={displayedModelStrength}
-          metricLabel="expression strength"
+          metricLabel="layer-28 alignment"
         >
           <div className={`response-card${conversation ? ' has-response' : ''}`}>
-            {responseContext ? (
+            {counterfactualProof ? (
+              <section
+                className={`counterfactual-proof counterfactual-proof--${counterfactualProof.emotion}`}
+                aria-label="Counterfactual proof"
+              >
+                <header>
+                  <span>COUNTERFACTUAL PROOF</span>
+                  <strong>SAME TRANSCRIPT · SAME DETERMINISTIC GEMMA</strong>
+                </header>
+                <q>{counterfactualProof.transcript}</q>
+                <div className="counterfactual-grid">
+                  <article className="counterfactual-side counterfactual-side--baseline">
+                    <span>TRANSCRIPT ONLY</span>
+                    <strong>{proofBaselinePlan}</strong>
+                    <p>{counterfactualProof.baseline.response}</p>
+                    <small>No face · no voice context · no synthesized audio</small>
+                  </article>
+                  <article className="counterfactual-side counterfactual-side--adapted">
+                    <span>+ {EMOTION_LABELS[counterfactualProof.emotion].toUpperCase()} FACE + VOICE</span>
+                    <strong>{proofAdaptedPlan}</strong>
+                    <p>
+                      {counterfactualProof.adapted?.response
+                        ?? (proofStage === 'failed'
+                          ? 'The adapted run failed. The transcript-only control is preserved; press Prove it to retry.'
+                          : 'Gemma is rerunning the same words with the labeled nonverbal signal…')}
+                    </p>
+                    <small>Only this side receives the injected context and expressive voice</small>
+                  </article>
+                </div>
+                <footer>{proofOutcomeCopy}{proofShiftCopy}</footer>
+                {displayedModelPhrase ? (
+                  <div className="proof-vector-trace">
+                    <span>LIVE LAYER-28 TRACE</span>
+                    <strong>
+                      {displayedModelPhrase.emotion?.toUpperCase()} · {confidenceLabel(displayedModelPhrase.intensity)} ALIGNMENT
+                    </strong>
+                    <small>{displayedModelPhrase.direction || 'Measured response delivery'}</small>
+                  </div>
+                ) : null}
+                <p className="proof-announcement" role="status" aria-live="polite">
+                  {counterfactualProof.adapted
+                    ? `Counterfactual result: ${proofBaselinePlan} became ${proofAdaptedPlan}. ${proofOutcomeCopy.toLowerCase()}.`
+                    : proofStage === 'failed'
+                      ? 'Adapted comparison failed. The transcript-only control is preserved and can be retried.'
+                      : 'Transcript-only control captured. Adding the selected nonverbal context.'}
+                </p>
+              </section>
+            ) : responseContext ? (
               <div className="response-context">
                 <span>WHY IT MATTERED</span>
                 <strong>{strategyLabel}</strong>
@@ -1033,11 +1345,13 @@ export function App() {
                 <i aria-hidden="true"><b style={{ width: `${Math.round(responseContext.nonverbalWeight * 100)}%` }} /></i>
               </div>
             ) : null}
-            <span>GEMMA · LAYER 28</span>
-            <blockquote>
-              {modelPhrase?.text ?? conversation?.response ?? 'The response will appear here, then move through the crowd phrase by phrase.'}
-            </blockquote>
-            {displayedModelPhrase ? (
+            {!counterfactualProof ? <span>GEMMA · LAYER 28</span> : null}
+            {!counterfactualProof ? (
+              <blockquote>
+                {modelPhrase?.text ?? conversation?.response ?? 'The response will appear here, then move through the crowd phrase by phrase.'}
+              </blockquote>
+            ) : null}
+            {displayedModelPhrase && !counterfactualProof ? (
               <small className="phrase-evidence">
                 <span><b>{modelToneScope}</b> · {displayedModelPhrase.direction || `${displayedModelPhrase.emotion} delivery`}</span>
                 <span>{confidenceLabel(displayedModelPhrase.intensity)} strength · {confidenceLabel(displayedModelPhrase.sharedMass)} shared-five coverage</span>
@@ -1054,28 +1368,56 @@ export function App() {
           <p>{conversation?.transcript ?? 'Your transcript will stay visible here.'}</p>
         </div>
         <form
-          className="typed-fallback"
+          className={`typed-fallback${judgeProofActive ? ' is-proof' : ''}`}
           onSubmit={(event) => {
             event.preventDefault();
-            submitTyped();
+            if (judgeProofActive) void runCounterfactualProof();
+            else submitTyped();
           }}
         >
-          <label htmlFor="typed-message">Typed fallback</label>
+          <label htmlFor="typed-message">
+            {judgeProofActive ? 'Pick the missing human context' : 'Typed fallback'}
+          </label>
+          {judgeProofActive ? (
+            <div className="demo-emotion-rail" aria-label="Injected emotion preset">
+              {SHARED_EMOTIONS.map((emotion) => (
+                <button
+                  key={emotion}
+                  type="button"
+                  className={`demo-emotion demo-emotion--${emotion}${demoEmotion === emotion ? ' is-selected' : ''}`}
+                  aria-pressed={demoEmotion === emotion}
+                  disabled={textLocked}
+                  onClick={() => chooseDemoEmotion(emotion)}
+                >
+                  {EMOTION_LABELS[emotion]}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <div>
             <input
               id="typed-message"
               value={typedText}
               onChange={(event) => setTypedText(event.target.value)}
-              placeholder="Type what you want Gemma to respond to…"
+              placeholder={judgeProofActive ? DEMO_PROOF_LINE : 'Type what you want Gemma to respond to…'}
               disabled={textLocked}
+              readOnly={judgeProofActive}
             />
-            <button type="submit" disabled={!typedText.trim() || textLocked}>Send</button>
+            <button type="submit" disabled={!typedText.trim() || textLocked}>
+              {judgeProofActive ? 'Prove it' : 'Send'}
+            </button>
           </div>
         </form>
         <div className="reply-panel">
           <span className="dock-label">IT REPLIED</span>
           <p>{conversation?.response ?? 'Gemma’s response and expressive voice will appear here.'}</p>
-          <audio ref={audioRef} controls preload="none" aria-label="Gemma expressive response" />
+          <audio
+            ref={audioRef}
+            controls
+            hidden={!conversation?.speechId}
+            preload="none"
+            aria-label="Gemma expressive response"
+          />
           {needsPlay ? <button type="button" className="play-button" onClick={playResponse}>Play expressive reply</button> : null}
         </div>
       </section>
@@ -1102,11 +1444,30 @@ export function App() {
           <div className="consent-glow" aria-hidden="true" />
           <div className="consent-card">
             {demoRequested ? <span className="demo-badge is-active">DEMO SIGNAL OPT-IN</span> : null}
-            <p className="consent-kicker">A TWO-SIDED EMOTION CONVERSATION</p>
-            <h1 id="consent-title">See what the model hears.<br />See what it feels back.</h1>
+            <p className="consent-kicker">
+              {demoRequested ? 'THE CONTEXT SPEECH-TO-TEXT DELETES' : 'A TWO-SIDED EMOTION CONVERSATION'}
+            </p>
+            <h1 id="consent-title">
+              {demoRequested ? (
+                <>Same words. Different human.<br />Different answer.</>
+              ) : (
+                <>Let the model hear<br />more than words.</>
+              )}
+            </h1>
             <p className="consent-copy">
-              Your face, voice energy, and words become one transparent signal. Gemma answers;
-              its internal emotion vectors shape both the crowd and ElevenLabs voice.
+              {demoRequested ? (
+                <>
+                  Run one transcript twice: first as words alone, then with face and voice context.
+                  See exactly when that missing human signal changes Gemma’s response plan, reply,
+                  internal emotion vectors, simulated crowd, and ElevenLabs voice.
+                </>
+              ) : (
+                <>
+                  Live facial expression, browser-estimated voice energy, and transcript become one
+                  transparent context. Gemma uses it to choose a response plan; the measured internal
+                  vector trace then drives the simulated crowd and ElevenLabs delivery.
+                </>
+              )}
             </p>
             <ul>
               <li><span>Camera</span><span className="consent-detail">Downscaled JPEG frames go to the local face endpoint about 4–5 times per second.</span></li>
@@ -1114,12 +1475,29 @@ export function App() {
               <li><span>Honesty</span><span className="consent-detail">Missing services show as unavailable. Demo data runs only with <code>?demo=1</code>.</span></li>
             </ul>
             <div className="consent-actions">
-              <button type="button" className="consent-primary" onClick={() => void startExperience()} disabled={phase === 'requesting'}>
-                {phase === 'requesting' ? 'Requesting permission…' : 'Start camera + microphone'}
-              </button>
-              <button type="button" className="consent-secondary" onClick={continueTyped} disabled={phase === 'requesting'}>Continue with typing</button>
+              {demoRequested ? (
+                <>
+                  <button type="button" className="consent-primary" onClick={openJudgeProof} disabled={phase === 'requesting'}>
+                    Open judge proof
+                  </button>
+                  <button type="button" className="consent-secondary" onClick={() => void startExperience()} disabled={phase === 'requesting'}>
+                    {phase === 'requesting' ? 'Requesting permission…' : 'Use live camera + microphone'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="consent-primary" onClick={() => void startExperience()} disabled={phase === 'requesting'}>
+                    {phase === 'requesting' ? 'Requesting permission…' : 'Start camera + microphone'}
+                  </button>
+                  <button type="button" className="consent-secondary" onClick={continueTyped} disabled={phase === 'requesting'}>Continue with typing</button>
+                </>
+              )}
             </div>
-            <small>Nothing starts automatically. You stay in control of recording.</small>
+            <small>
+              {demoRequested
+                ? 'Judge proof uses clearly labeled synthetic signals; the live path remains one click away.'
+                : 'Nothing starts automatically. You stay in control of recording.'}
+            </small>
           </div>
         </section>
       ) : null}

@@ -6,6 +6,8 @@ import {
   type EmotionScores,
 } from '../state/emotion.js';
 
+export const API_VERSION = '2026-07-18.1' as const;
+
 export interface FaceAnalysis {
   detected: boolean;
   scores: EmotionScores;
@@ -47,6 +49,7 @@ export interface ConversationModality {
 }
 
 export interface ConversationResponse {
+  apiVersion: typeof API_VERSION;
   transcript: string;
   human: {
     scores: EmotionScores;
@@ -69,6 +72,7 @@ export interface ConversationRequest {
   face_confidence?: number;
   prosody_scores?: EmotionScores;
   prosody_confidence?: number;
+  synthesize_speech?: boolean;
 }
 
 export class ApiError extends Error {
@@ -89,6 +93,24 @@ const finite = (value: unknown, fallback = 0): number =>
 
 const clamp01 = (value: unknown): number => Math.max(0, Math.min(1, finite(value)));
 const ZERO_CONTEXT_SCORES = normalizeEmotionScores({});
+let apiCompatible = false;
+
+async function ensureApiCompatibility(signal?: AbortSignal): Promise<void> {
+  if (apiCompatible) return;
+  const response = await fetch('/api/config', { signal });
+  if (!response.ok) throw new ApiError(await errorMessage(response), response.status);
+  const body = (await response.json().catch(() => null)) as unknown;
+  const received = isRecord(body) && typeof body.api_version === 'string'
+    ? body.api_version
+    : 'missing';
+  if (received !== API_VERSION) {
+    throw new ApiError(
+      `Backend contract mismatch (expected ${API_VERSION}, received ${received}). Restart the local backend.`,
+      409
+    );
+  }
+  apiCompatible = true;
+}
 
 function scoresFrom(value: unknown): EmotionScores {
   if (!isRecord(value)) return normalizeEmotionScores({});
@@ -203,16 +225,29 @@ export async function converse(
   payload: ConversationRequest,
   signal?: AbortSignal
 ): Promise<ConversationResponse> {
+  await ensureApiCompatibility(signal);
   const response = await fetch('/api/conversation', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, api_version: API_VERSION }),
     signal,
   });
   if (!response.ok) throw new ApiError(await errorMessage(response), response.status);
 
   const body = (await response.json()) as unknown;
-  if (!isRecord(body) || typeof body.transcript !== 'string' || typeof body.response !== 'string') {
+  if (
+    !isRecord(body)
+    || body.api_version !== API_VERSION
+    || typeof body.transcript !== 'string'
+    || typeof body.response !== 'string'
+  ) {
+    if (isRecord(body) && body.api_version !== API_VERSION) {
+      const received = typeof body.api_version === 'string' ? body.api_version : 'missing';
+      throw new ApiError(
+        `Backend response contract mismatch (expected ${API_VERSION}, received ${received}).`,
+        409
+      );
+    }
     throw new ApiError('Conversation service returned an invalid response.', response.status);
   }
 
@@ -237,6 +272,7 @@ export async function converse(
   }
 
   return {
+    apiVersion: API_VERSION,
     transcript: body.transcript,
     human: {
       scores: humanScores,

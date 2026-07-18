@@ -10,6 +10,29 @@ ElevenLabs speaks the same measured delivery in sync.
 This is not a chat box with an emotion badge. Every person in both 120-character
 crowds changes color, face, gait, behavior, and particles as the mixture moves.
 
+## The 90-second judge proof
+
+Open [http://127.0.0.1:8766/?demo=1](http://127.0.0.1:8766/?demo=1) and choose
+**Open judge proof**. NULL MIRROR sends the same ambiguous transcript through
+the same deterministic Gemma setup twice:
+
+1. **Transcript only** — words-only control, with no face or voice context and
+   no synthesized audio.
+2. **+ Face & voice** — the selected, clearly labeled rehearsal signal changes
+   the response context; this side also gets the expressive ElevenLabs voice.
+
+Choose any stable preset: **happy**, **sad**, **angry**, **afraid**, or
+**surprised**, then press **Prove it**. The comparison exposes both response
+plans and replies, plus the measured fused-signal distribution shift. If the
+context does not change either outcome, the UI says **same outcome** instead of
+manufacturing a difference.
+
+This is a controlled causal demonstration, not a sensor-accuracy claim. The
+injected signals exist only under `?demo=1`, remain labeled throughout, and are
+intended for repeatable rehearsal. The default URL remains the primary live
+path: a real camera expression estimate, live browser-side voice-energy
+heuristic, and a recorded utterance transcribed by ElevenLabs Scribe.
+
 ## The live loop
 
 ```mermaid
@@ -68,12 +91,9 @@ Every response returns an audit-friendly context object. The right pane shows:
   the words-only reading; and
 - the response strategy that Gemma was explicitly asked to express in content.
 
-A controlled same-words A/B with `I guess the presentation is over.` produced
-a celebratory response under injected happy face/voice evidence and a
-supportive, concerned response under injected sad face/voice evidence. This
-validates the conditioning path independently of sensor accuracy. In both runs,
-the UI exposed the fusion inputs and adaptation decision instead of asking the
-audience to trust that it happened.
+The built-in counterfactual makes this conditioning path inspectable without
+asking the audience to trust that it happened. Its words-only control skips TTS
+to keep the baseline conceptually clean; only the context-aware side speaks.
 
 ## Run the complete experience
 
@@ -90,7 +110,8 @@ make run
 
 `make run` builds the React experience, loads Gemma once, and serves everything
 from [http://127.0.0.1:8766](http://127.0.0.1:8766). The first run downloads the
-Gemma/vector assets and the HSEmotion ONNX model; later runs use their caches.
+Gemma/vector assets; the first successful face request lazily downloads the
+HSEmotion ONNX model. Later runs use both caches.
 
 For frontend iteration, run these in separate terminals:
 
@@ -107,8 +128,11 @@ to the warm backend.
 - Press **Start camera + microphone** to opt into live sensors.
 - Press **Speak to the mirror**, speak naturally, then stop the recording.
 - If camera or microphone access is unavailable, use the typed fallback.
-- For hardware-free stage rehearsal, open `/?demo=1`. The generated input is
-  permanently marked **DEMO SIGNAL** and never activates without that query.
+- For repeatable stage rehearsal, open `/?demo=1`, choose **Open judge proof**,
+  select one of the five emotion presets, and press **Prove it**. The injected
+  input is permanently labeled and never activates without that query.
+- **Use live camera + microphone** remains available from the proof landing
+  screen so judges can move directly from the control to the real experience.
 - If browser autoplay is blocked, the response remains available through the
   visible audio control and play button.
 
@@ -117,9 +141,11 @@ to the warm backend.
 - **Face** is an HSEmotion eight-class expression estimate projected onto the
   shared five. It is evidence about a visible expression, not a fact about a
   person's inner state.
-- **Voice energy** is a conservative browser-side heuristic using loudness,
-  pitch movement, spectral centroid, and onset relative to a rolling baseline.
-  It is labeled as a heuristic in the UI.
+- **Voice energy** is a conservative browser-side prosody heuristic using
+  loudness, pitch movement, spectral centroid, and onset relative to a rolling
+  baseline. It stays in the browser and is labeled as a heuristic in the UI.
+- **ElevenLabs** performs Scribe transcription after recording stops and TTS for
+  the response. It does not produce the live prosody estimate.
 - **Words** are compared with the same published Gemma emotion directions used
   for the response trace. This experimental scorer is deliberately confidence
   capped; face and voice remain able to change the response context.
@@ -140,6 +166,31 @@ to the warm backend.
 - Typed conversation works without ElevenLabs. Missing providers and model
   failures are shown explicitly; the normal experience never substitutes fake
   data.
+
+## Stage warm-up checklist
+
+Do this before the venue network or presentation clock becomes a variable:
+
+1. On a reliable connection, run `make setup`, then `make test`.
+2. Run `make run` at least once before demo day. The first model load downloads
+   roughly **15 GB** of Gemma assets into the Hugging Face cache, plus the vector
+   archive and face model. Do not make the first download on stage.
+3. After the assets are cached, use `make run-offline` for the stage and wait
+   for the terminal's **Model ready** message before opening the experience.
+   This keeps Gemma loaded between turns and prevents Hugging Face metadata
+   checks from depending on venue Wi-Fi. Use `make backend-offline` when you do
+   not want the launcher to open a browser.
+4. At the venue, verify one live recorded turn at the default URL (including a
+   successful face reading, which also warms the lazily loaded HSEmotion ONNX
+   asset), then open `/?demo=1` and run one complete **Open judge proof**
+   comparison.
+5. Confirm response audio can play in the presentation browser. If autoplay is
+   blocked, use the visible play control once before the pitch.
+
+The offline targets require the Gemma and vector assets to be cached already.
+ElevenLabs transcription and TTS still require a working network connection
+and valid key; without them, typed Gemma responses still work but the live
+speech loop and adapted proof voice do not.
 
 ## Validate
 
