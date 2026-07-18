@@ -12,7 +12,7 @@ import type { Side } from '../state/emotion.js';
 
 interface CrowdPaneProps {
   side: Side;
-  label: string;
+  label?: string;
 }
 
 export function CrowdPane({ side, label }: CrowdPaneProps) {
@@ -34,7 +34,7 @@ export function CrowdPane({ side, label }: CrowdPaneProps) {
   return (
     <section className="pane">
       <canvas ref={canvasRef} className="crowd" />
-      <span className="label">{label}</span>
+      {label && <span className="label">{label}</span>}
     </section>
   );
 }

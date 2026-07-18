@@ -59,3 +59,157 @@ body {
   color: var(--dim);
   pointer-events: none;
 }
+
+/* --- auth ---------------------------------------------------------------- */
+
+.booting {
+  height: 100%;
+  background: var(--bg);
+}
+
+.auth {
+  position: relative;
+  height: 100%;
+  display: grid;
+  place-items: center;
+}
+
+/* The crowd runs behind the form — the first thing anyone sees should already
+   be the thing itself, not a form on a blank page. */
+.auth-bg {
+  position: absolute;
+  inset: 0;
+  opacity: 0.45;
+}
+
+.auth-bg .pane {
+  height: 100%;
+}
+
+.auth-card {
+  position: relative;
+  z-index: 1;
+  width: min(24rem, calc(100vw - 3rem));
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 2rem;
+  border: 1px solid #23232b;
+  border-radius: 0.75rem;
+  background: rgba(10, 10, 12, 0.82);
+  backdrop-filter: blur(14px);
+}
+
+.auth-card h1 {
+  font-size: 1.5rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.auth-sub {
+  margin-bottom: 1rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+.auth-card label {
+  margin-top: 0.5rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.auth-card input {
+  padding: 0.6rem 0.7rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--fg);
+  background: #121216;
+  border: 1px solid #26262f;
+  border-radius: 0.4rem;
+}
+
+.auth-card input:focus {
+  outline: none;
+  border-color: #4a4a5a;
+}
+
+.auth-card button[type='submit'] {
+  margin-top: 1.25rem;
+  padding: 0.6rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: #0a0a0c;
+  background: var(--fg);
+  border: 0;
+  border-radius: 0.4rem;
+  cursor: pointer;
+}
+
+.auth-card button[type='submit']:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.auth-link {
+  margin-top: 0.75rem;
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--dim);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.auth-link:hover {
+  color: var(--fg);
+}
+
+.auth-error,
+.auth-notice,
+.auth-warn {
+  margin-top: 0.75rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.auth-error { color: #e2807f; }
+.auth-notice { color: #8fbf9f; }
+
+.auth-warn {
+  padding-top: 0.75rem;
+  border-top: 1px solid #1e1e26;
+  color: var(--dim);
+}
+
+.auth-warn code {
+  font-size: 0.72rem;
+  color: #8a8797;
+}
+
+/* --- session ------------------------------------------------------------- */
+
+.session-bar {
+  position: absolute;
+  top: 1rem;
+  right: 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  font-size: 0.72rem;
+  color: var(--dim);
+}
+
+.session-bar button {
+  font: inherit;
+  color: var(--dim);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.session-bar button:hover {
+  color: var(--fg);
+}
