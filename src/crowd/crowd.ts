@@ -52,6 +52,9 @@ const EMITTER_SHAPES = ['drop', 'puff', 'heart', 'spark'] as const;
 /** Velocity carry-over per frame. High = smooth paths, slow to turn. */
 const INERTIA = 0.93;
 const WANDER_FORCE = 0.0022;
+/** How far from the edge they start turning back, in world units. */
+const EDGE_MARGIN = 2;
+const EDGE_FORCE = 0.0016;
 
 interface Agent {
   pos: THREE.Vector3;
@@ -257,7 +260,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
     if (!Number.isFinite(zNear) || !Number.isFinite(zFar)) return;
     // Pulled IN at the far edge — a figure standing there has its head above
     // the ground point, so it would poke out of the top of frame.
-    bounds.zNear = zNear - 1.5;
+    bounds.zNear = zNear - 0.5;
     bounds.zFar = zFar + 2.5;
   };
 
@@ -501,6 +504,17 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
       fx -= a.pos.x * cohesion;
       fz -= a.pos.z * cohesion;
 
+      // Turn back before the edge rather than teleporting across it. Wrapping
+      // reads as figures glitching in and out; a soft push plus the clamp
+      // below reads as a room they're milling around inside.
+      const edgeX = halfXAt(bounds, a.pos.z);
+      if (a.pos.x > edgeX - EDGE_MARGIN) fx -= (a.pos.x - edgeX + EDGE_MARGIN) * EDGE_FORCE;
+      if (a.pos.x < -edgeX + EDGE_MARGIN) fx += (-edgeX + EDGE_MARGIN - a.pos.x) * EDGE_FORCE;
+      if (a.pos.z > bounds.zNear - EDGE_MARGIN)
+        fz -= (a.pos.z - bounds.zNear + EDGE_MARGIN) * EDGE_FORCE;
+      if (a.pos.z < bounds.zFar + EDGE_MARGIN)
+        fz += (bounds.zFar + EDGE_MARGIN - a.pos.z) * EDGE_FORCE;
+
       if (cursorActive) {
         const dx = a.pos.x - cursor.x;
         const dz = a.pos.z - cursor.z;
@@ -542,11 +556,28 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
       a.vel.multiplyScalar(1 + (wanted / current - 1) * 0.08);
       a.pos.add(a.vel);
 
-      if (a.pos.z > bounds.zNear) a.pos.z = bounds.zFar;
-      if (a.pos.z < bounds.zFar) a.pos.z = bounds.zNear;
+      // Hard stop. Anything that still reaches the edge — a punch impulse, a
+      // panic bolt — is reflected rather than teleported, and its wander
+      // target is turned inward so it doesn't grind along the wall.
+      if (a.pos.z > bounds.zNear) {
+        a.pos.z = bounds.zNear;
+        a.vel.z = -Math.abs(a.vel.z);
+        a.wander = Math.PI;
+      } else if (a.pos.z < bounds.zFar) {
+        a.pos.z = bounds.zFar;
+        a.vel.z = Math.abs(a.vel.z);
+        a.wander = 0;
+      }
       const hx = halfXAt(bounds, a.pos.z);
-      if (a.pos.x > hx) a.pos.x = -hx;
-      if (a.pos.x < -hx) a.pos.x = hx;
+      if (a.pos.x > hx) {
+        a.pos.x = hx;
+        a.vel.x = -Math.abs(a.vel.x);
+        a.wander = -Math.PI / 2;
+      } else if (a.pos.x < -hx) {
+        a.pos.x = -hx;
+        a.vel.x = Math.abs(a.vel.x);
+        a.wander = Math.PI / 2;
+      }
 
       const energy = Math.min(1, current * 26);
       // Frequency is capped and does NOT take bounceBias — that scales
