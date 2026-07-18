@@ -11,7 +11,9 @@
  * one thing a single label can never express.
  */
 
-export type Gait = 'walk' | 'skip' | 'run' | 'trudge' | 'creep' | 'stagger' | 'drift';
+export type Gait =
+  | 'walk' | 'skip' | 'run' | 'trudge' | 'creep' | 'stagger' | 'drift'
+  | 'stomp' | 'scurry';
 export type Behavior =
   | 'wander'
   | 'strike' // seeks others out and swings at them
@@ -95,7 +97,7 @@ export const ARCHETYPES: Archetype[] = [
     hairHue: 0.02, hairSat: 0.6, hairLight: 0.22,
     headScale: 0.94, girth: 1.3, limbLength: 0.94, heightBias: 1.03, hair: 0.9,
     leanBias: 0.42, hunchBias: 0.4, bounceBias: 0.8, speedBias: 1.45,
-    gait: 'stagger', behavior: 'strike',
+    gait: 'stomp', behavior: 'strike',
     affinity: (i, e) => i * e * e * 3.6,
   },
   {
@@ -145,7 +147,7 @@ export const ARCHETYPES: Archetype[] = [
     hairHue: 0.7, hairSat: 0.4, hairLight: 0.3,
     headScale: 1.2, girth: 0.82, limbLength: 0.9, heightBias: 0.86, hair: 0.75,
     leanBias: 0.2, hunchBias: 0.6, bounceBias: 1.1, speedBias: 1.6,
-    gait: 'run', behavior: 'flee',
+    gait: 'scurry', behavior: 'flee',
     affinity: (i, e, m) => e * m * clamp01(0.4 + i * 0.6) * 3.0,
   },
 ];

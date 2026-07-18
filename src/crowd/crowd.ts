@@ -21,8 +21,21 @@ import { PARTICLES, particleGeometries, type ParticleShape } from './particles.j
 const MAX_AGENTS = 160;
 const BASE_AGENTS = 26;
 
-/** Ground-plane bounds. Agents wrap inside this box. */
-const BOUNDS = { x: 32, z: 17 };
+/**
+ * Where agents may walk, derived from the camera frustum at resize rather than
+ * hardcoded — a tilted camera sees a TRAPEZOID of ground, so a fixed rectangle
+ * either leaks figures off-screen or leaves the corners empty.
+ *
+ * `halfXNear`/`halfXFar` bracket that trapezoid; wrapping interpolates between
+ * them, so agents disappear exactly at the edge of frame and reappear at the
+ * far side.
+ */
+interface Bounds {
+  zNear: number;
+  zFar: number;
+  halfXNear: number;
+  halfXFar: number;
+}
 
 /** How far the cursor's repulsion reaches, in world units. */
 const CURSOR_RADIUS = 6;
@@ -56,13 +69,16 @@ interface Agent {
   wander: number;
 }
 
-function makeAgent(archetype: number): Agent {
+/** Half-width of the visible ground at a given depth. */
+function halfXAt(b: Bounds, z: number): number {
+  const t = (z - b.zFar) / (b.zNear - b.zFar || 1);
+  return b.halfXFar + (b.halfXNear - b.halfXFar) * Math.max(0, Math.min(1, t));
+}
+
+function makeAgent(archetype: number, b: Bounds): Agent {
+  const z = b.zFar + Math.random() * (b.zNear - b.zFar);
   return {
-    pos: new THREE.Vector3(
-      (Math.random() - 0.5) * BOUNDS.x,
-      0,
-      (Math.random() - 0.5) * BOUNDS.z
-    ),
+    pos: new THREE.Vector3((Math.random() - 0.5) * 2 * halfXAt(b, z), 0, z),
     vel: new THREE.Vector3((Math.random() - 0.5) * 0.1, 0, (Math.random() - 0.5) * 0.1),
     phase: Math.random() * Math.PI * 2,
     bias: 0.8 + Math.random() * 0.4,
@@ -99,8 +115,10 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
   scene.fog = new THREE.FogExp2(0x0a0a0c, 0.026);
 
   const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 120);
-  camera.position.set(0, 6.2, 24);
-  camera.lookAt(0, 1.1, 0);
+  // Steep enough that the ground plane fills the frame rather than sitting in
+  // a band across the middle.
+  camera.position.set(0, 15, 13);
+  camera.lookAt(0, 0.4, 0);
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.66));
   const key = new THREE.DirectionalLight(0xffffff, 1.0);
@@ -193,6 +211,38 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
   let tick = 0;
   let stopped = false;
 
+  const bounds: Bounds = { zNear: 12, zFar: -12, halfXNear: 10, halfXFar: 16 };
+  const corner = new THREE.Vector3();
+
+  /** Project the four screen corners onto the ground to get the walkable area. */
+  const computeBounds = () => {
+    let zNear = -Infinity;
+    let zFar = Infinity;
+    let halfXNear = 0;
+    let halfXFar = 0;
+    for (const [nx, ny] of [
+      [-1, -1], [1, -1], [-1, 1], [1, 1],
+    ] as const) {
+      ndc.set(nx, ny);
+      raycaster.setFromCamera(ndc, camera);
+      if (!raycaster.ray.intersectPlane(groundPlane, corner)) continue;
+      if (ny < 0) {
+        zNear = Math.max(zNear, corner.z);
+        halfXNear = Math.max(halfXNear, Math.abs(corner.x));
+      } else {
+        zFar = Math.min(zFar, corner.z);
+        halfXFar = Math.max(halfXFar, Math.abs(corner.x));
+      }
+    }
+    if (!Number.isFinite(zNear) || !Number.isFinite(zFar)) return;
+    // A little slack so they wrap just out of frame rather than popping at
+    // the visible edge.
+    bounds.zNear = zNear + 1.5;
+    bounds.zFar = zFar - 1.5;
+    bounds.halfXNear = halfXNear + 1.5;
+    bounds.halfXFar = halfXFar + 1.5;
+  };
+
   const resize = () => {
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
@@ -200,6 +250,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    computeBounds();
   };
   resize();
 
@@ -253,7 +304,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
         }
       }
       counts[pick]++;
-      agents.push(makeAgent(pick));
+      agents.push(makeAgent(pick, bounds));
     }
     // Retype a couple per frame so the mix slides rather than cuts.
     for (let n = 0; n < 2; n++) {
@@ -284,7 +335,10 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
     // Cohesion stays a mild ATTRACTION always — it's what keeps the crowd on
     // screen. Dispersal comes from local repulsion: inverted gravity scales
     // with distance, so it runs away and piles everyone on the edges.
-    const cohesion = 0.00018 + effort * 0.001;
+    // Near-zero at rest. Wrapping is what contains the crowd, so cohesion is
+    // free to be purely expressive — any standing pull collapses everyone into
+    // the middle and leaves the viewport empty.
+    const cohesion = effort * 0.00035;
     const personalSpace = 3.2 - effort * 1.7;
     // Deliberately unhurried. A crowd that darts around reads as noise; the
     // emotion is in posture, gait and behaviour, and those need time to be
@@ -299,8 +353,8 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
     for (const e of emphases) {
       if (consumed.has(e.id)) continue;
       consumed.add(e.id);
-      const ox = (Math.random() - 0.5) * BOUNDS.x;
-      const oz = (Math.random() - 0.5) * BOUNDS.z;
+      const oz = bounds.zFar + Math.random() * (bounds.zNear - bounds.zFar);
+      const ox = (Math.random() - 0.5) * 2 * halfXAt(bounds, oz);
       for (const a of agents) {
         const dx = a.pos.x - ox;
         const dz = a.pos.z - oz;
@@ -470,12 +524,11 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
       a.vel.multiplyScalar(1 + (wanted / current - 1) * 0.08);
       a.pos.add(a.vel);
 
-      const hx = BOUNDS.x / 2;
-      const hz = BOUNDS.z / 2;
-      if (a.pos.x < -hx) a.pos.x = hx;
+      if (a.pos.z > bounds.zNear) a.pos.z = bounds.zFar;
+      if (a.pos.z < bounds.zFar) a.pos.z = bounds.zNear;
+      const hx = halfXAt(bounds, a.pos.z);
       if (a.pos.x > hx) a.pos.x = -hx;
-      if (a.pos.z < -hz) a.pos.z = hz;
-      if (a.pos.z > hz) a.pos.z = -hz;
+      if (a.pos.x < -hx) a.pos.x = hx;
 
       const energy = Math.min(1, current * 26);
       // Frequency is capped and does NOT take bounceBias — that scales
@@ -488,6 +541,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
       const h = a.height * arch.heightBias * (0.55 + a.blend * 0.45);
       const len = arch.limbLength;
       const myLean = crowdLean + arch.leanBias + p.lean;
+      const headPitch = myLean * 0.7 + p.headDrop;
       const myHunch = Math.max(0, Math.min(1, crowdHunch + arch.hunchBias));
       const upright = 1 - myHunch * 0.42;
       const hipY = (0.58 * len + p.bounce * arch.bounceBias) * h;
@@ -549,7 +603,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
           shoulderY - 0.03 * h,
           a.pos.z - sy * inset
         );
-        dummy.rotation.set(swing, yaw, -arm.dir * myHunch * 0.28);
+        dummy.rotation.set(swing, yaw, -arm.dir * (myHunch * 0.28 + p.armSpread));
         dummy.scale.setScalar(h);
         dummy.updateMatrix();
         arm.mesh.setMatrixAt(i, dummy.matrix);
@@ -571,7 +625,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
       const headX = a.pos.x + Math.sin(myLean) * sy * 0.2 * h;
       const headZ = a.pos.z + Math.sin(myLean) * cy * 0.2 * h;
       dummy.position.set(headX, headY, headZ);
-      dummy.rotation.set(myLean * 0.7, yaw, p.sway * 1.4);
+      dummy.rotation.set(headPitch, yaw, p.sway * 1.4);
       dummy.scale.setScalar(h * arch.headScale);
       dummy.updateMatrix();
       parts.head.setMatrixAt(i, dummy.matrix);
