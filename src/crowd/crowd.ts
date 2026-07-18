@@ -33,8 +33,15 @@ const BASE_AGENTS = 26;
 interface Bounds {
   zNear: number;
   zFar: number;
-  halfXNear: number;
-  halfXFar: number;
+  /** tan(vFov/2) * aspect — half-width per unit of view-axis depth. */
+  spread: number;
+  /** Camera position and forward axis, for the exact depth calculation. */
+  cx: number;
+  cy: number;
+  cz: number;
+  fx: number;
+  fy: number;
+  fz: number;
 }
 
 /** How far the cursor's repulsion reaches, in world units. */
@@ -69,10 +76,17 @@ interface Agent {
   wander: number;
 }
 
-/** Half-width of the visible ground at a given depth. */
+/**
+ * Exact half-width of the frustum over the ground at depth `z`.
+ *
+ * Frustum width scales with distance along the VIEW AXIS, which is not linear
+ * in z for a tilted camera — interpolating between the near and far corner
+ * widths overestimates by a couple of units through the middle of the field,
+ * which is precisely where most agents are, so they leak off the sides.
+ */
 function halfXAt(b: Bounds, z: number): number {
-  const t = (z - b.zFar) / (b.zNear - b.zFar || 1);
-  return b.halfXFar + (b.halfXNear - b.halfXFar) * Math.max(0, Math.min(1, t));
+  const depth = (0 - b.cx) * b.fx + (0 - b.cy) * b.fy + (z - b.cz) * b.fz;
+  return Math.max(1, b.spread * depth);
 }
 
 function makeAgent(archetype: number, b: Bounds): Agent {
@@ -211,36 +225,40 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
   let tick = 0;
   let stopped = false;
 
-  const bounds: Bounds = { zNear: 12, zFar: -12, halfXNear: 10, halfXFar: 16 };
+  const bounds: Bounds = {
+    zNear: 12, zFar: -12, spread: 0.4,
+    cx: 0, cy: 15, cz: 13, fx: 0, fy: -1, fz: -1,
+  };
   const corner = new THREE.Vector3();
+  const forward = new THREE.Vector3();
 
   /** Project the four screen corners onto the ground to get the walkable area. */
   const computeBounds = () => {
+    camera.getWorldDirection(forward);
+    bounds.cx = camera.position.x;
+    bounds.cy = camera.position.y;
+    bounds.cz = camera.position.z;
+    bounds.fx = forward.x;
+    bounds.fy = forward.y;
+    bounds.fz = forward.z;
+    bounds.spread = Math.tan((camera.fov * Math.PI) / 360) * camera.aspect;
+
     let zNear = -Infinity;
     let zFar = Infinity;
-    let halfXNear = 0;
-    let halfXFar = 0;
     for (const [nx, ny] of [
       [-1, -1], [1, -1], [-1, 1], [1, 1],
     ] as const) {
       ndc.set(nx, ny);
       raycaster.setFromCamera(ndc, camera);
       if (!raycaster.ray.intersectPlane(groundPlane, corner)) continue;
-      if (ny < 0) {
-        zNear = Math.max(zNear, corner.z);
-        halfXNear = Math.max(halfXNear, Math.abs(corner.x));
-      } else {
-        zFar = Math.min(zFar, corner.z);
-        halfXFar = Math.max(halfXFar, Math.abs(corner.x));
-      }
+      if (ny < 0) zNear = Math.max(zNear, corner.z);
+      else zFar = Math.min(zFar, corner.z);
     }
     if (!Number.isFinite(zNear) || !Number.isFinite(zFar)) return;
-    // A little slack so they wrap just out of frame rather than popping at
-    // the visible edge.
-    bounds.zNear = zNear + 1.5;
-    bounds.zFar = zFar - 1.5;
-    bounds.halfXNear = halfXNear + 1.5;
-    bounds.halfXFar = halfXFar + 1.5;
+    // Pulled IN at the far edge — a figure standing there has its head above
+    // the ground point, so it would poke out of the top of frame.
+    bounds.zNear = zNear - 1.5;
+    bounds.zFar = zFar + 2.5;
   };
 
   const resize = () => {
