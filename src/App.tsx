@@ -1,8 +1,8 @@
 /**
  * App shell. Two panes: what it heard in you (left), what it's feeling back
- * (right). The divider is permeable on purpose — figures drift across, and the
- * two crowds sync when it attunes to you. That synchronisation is empathy made
- * visible, with no labels anywhere.
+ * (right). The divider is permeable on purpose — figures should be able to
+ * drift across, and the two crowds sync when it attunes to you. That
+ * synchronisation is empathy made visible, with no labels anywhere.
  *
  * React owns layout and lifecycle only. The fusion tick and both render loops
  * run outside React entirely.
@@ -12,12 +12,8 @@ import { useEffect } from 'react';
 import { CrowdPane } from './crowd/CrowdPane.js';
 import { fuse, startSources, updateAttunement, store } from './state/emotion.js';
 import { pointerSource } from './sources/pointer.js';
-import { AuthProvider, useAuth } from './auth/AuthProvider.js';
-import { AuthScreen } from './auth/AuthScreen.js';
 
-function Session() {
-  const { user, signOut } = useAuth();
-
+export function App() {
   useEffect(() => {
     // Add prosody / face / heart-rate adapters here as they land. Each is one
     // file in src/sources — nothing else needs to change.
@@ -50,26 +46,6 @@ function Session() {
       <CrowdPane side="user" label="you" />
       <div className="divider" />
       <CrowdPane side="model" label="it" />
-      <div className="session-bar">
-        <span>{user?.email}</span>
-        <button type="button" onClick={() => void signOut()}>
-          Sign out
-        </button>
-      </div>
     </main>
-  );
-}
-
-function Gate() {
-  const { user, loading } = useAuth();
-  if (loading) return <div className="booting" />;
-  return user ? <Session /> : <AuthScreen />;
-}
-
-export function App() {
-  return (
-    <AuthProvider>
-      <Gate />
-    </AuthProvider>
   );
 }
