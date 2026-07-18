@@ -77,6 +77,8 @@ interface Agent {
   emit: number;
   /** Persistent heading target. Drifts slowly so paths curve, not twitch. */
   wander: number;
+  /** Rendered facing. Eases toward the heading — a body can't snap round. */
+  facing: number;
 }
 
 /**
@@ -109,6 +111,7 @@ function makeAgent(archetype: number, b: Bounds): Agent {
     frozen: 0,
     emit: Math.random(),
     wander: Math.random() * Math.PI * 2,
+    facing: Math.random() * Math.PI * 2,
   };
 }
 
@@ -460,8 +463,10 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
             const dx = t.pos.x - a.pos.x;
             const dz = t.pos.z - a.pos.z;
             const d = Math.hypot(dx, dz) || 1;
-            // Closes, then lingers rather than colliding.
-            const pull = d > 2.4 ? 0.0045 : -0.0025;
+            // Continuous, and zero at the preferred distance. A sign flip at
+            // a hard threshold makes them hunt back and forth across it.
+            const want = personalSpace + 0.6;
+            const pull = Math.max(-0.5, Math.min(1, (d - want) / 4)) * 0.0045;
             a.vel.x += (dx / d) * pull;
             a.vel.z += (dz / d) * pull;
           }
@@ -589,7 +594,17 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
 
       // --- pose ---------------------------------------------------------
       const p = pose(arch.gait, a.phase, energy, a.seed);
-      const yaw = Math.atan2(a.vel.x, a.vel.z);
+      // Turn toward the heading rather than snapping to it. Reading yaw
+      // straight off the velocity vector means any wobble spins the whole
+      // body, and when an agent slows to a near-stop atan2 is pure noise —
+      // which is what made them flick left and right on the spot.
+      if (current > 0.0025) {
+        let diff = Math.atan2(a.vel.x, a.vel.z) - a.facing;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        a.facing += diff * 0.09;
+      }
+      const yaw = a.facing;
       const h = a.height * arch.heightBias * (0.55 + a.blend * 0.45);
       const len = arch.limbLength;
       const myLean = crowdLean + arch.leanBias + p.lean;
