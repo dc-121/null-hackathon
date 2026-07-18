@@ -117,9 +117,9 @@ export function pose(gait: Gait, phase: number, energy: number, seed: number): P
         arm: -skew(phase, -0.5) * 0.1 - 0.12,
         armSpread: -0.06,
         bounce: -step * 0.02,
-        lean: 0.12,
+        lean: 0.2,
         sway: s * 0.06,
-        headDrop: 0.34,
+        headDrop: 0.46,
       };
     }
 

@@ -371,65 +371,46 @@ button {
 
 .camera-card,
 .signal-stack,
-.proof-signal-card,
+.proof-signal-inline,
 .emotion-bars,
 .response-card {
   pointer-events: auto;
 }
 
-.proof-signal-card {
+.proof-signal-inline {
   --proof-signal-color: var(--muted);
   position: absolute;
-  top: 62px;
+  top: 48px;
   left: 22px;
-  display: grid;
-  width: min(230px, 38vw);
-  gap: 6px;
-  padding: 11px;
-  background: rgba(8, 10, 15, 0.82);
-  border: 1px solid color-mix(in srgb, var(--proof-signal-color) 42%, var(--line));
-  border-radius: 13px;
-  box-shadow: 0 16px 46px rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(12px);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  background: rgba(7, 9, 13, 0.72);
+  border-radius: 999px;
 }
 
-.proof-signal-card--happy { --proof-signal-color: var(--happy); }
-.proof-signal-card--sad { --proof-signal-color: var(--sad); }
-.proof-signal-card--angry { --proof-signal-color: var(--angry); }
-.proof-signal-card--afraid { --proof-signal-color: var(--afraid); }
-.proof-signal-card--surprised { --proof-signal-color: var(--surprised); }
+.proof-signal-inline--happy { --proof-signal-color: var(--happy); }
+.proof-signal-inline--sad { --proof-signal-color: var(--sad); }
+.proof-signal-inline--angry { --proof-signal-color: var(--angry); }
+.proof-signal-inline--afraid { --proof-signal-color: var(--afraid); }
+.proof-signal-inline--surprised { --proof-signal-color: var(--surprised); }
 
-.proof-signal-card > header {
-  display: grid;
-  gap: 2px;
-  padding: 1px 2px 7px;
-  border-bottom: 1px solid var(--line);
-}
-
-.proof-signal-card > header span,
-.proof-signal-card > small {
-  color: var(--dim);
+.proof-signal-inline strong,
+.proof-signal-inline span {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.48rem;
-  letter-spacing: 0.075em;
-  line-height: 1.4;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.proof-signal-card > header strong {
+.proof-signal-inline strong {
   color: var(--proof-signal-color);
-  font-size: 0.72rem;
+  font-size: 0.58rem;
 }
 
-.proof-signal-card .signal-chip {
-  min-height: 36px;
-  padding: 6px 7px;
-  background: rgba(255, 255, 255, 0.025);
-}
-
-.proof-signal-card > small {
-  padding: 2px 2px 0;
-  text-transform: none;
+.proof-signal-inline span {
+  color: var(--muted);
+  font-size: 0.47rem;
 }
 
 .camera-card {
@@ -762,7 +743,7 @@ button {
 }
 
 .counterfactual-proof > header span,
-.counterfactual-side > span,
+.proof-plan > span,
 .counterfactual-proof > footer {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   letter-spacing: 0.08em;
@@ -779,62 +760,48 @@ button {
   font-size: 0.69rem;
 }
 
-.counterfactual-grid {
+.proof-plan-flow {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
 }
 
-.counterfactual-side {
+.proof-plan-flow > i {
+  color: var(--acid);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.2rem;
+  font-style: normal;
+}
+
+.proof-plan {
   display: grid;
-  align-content: start;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
-  padding: 10px;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid var(--line);
-  border-radius: 10px;
 }
 
-.counterfactual-side--baseline {
-  filter: saturate(0);
+.proof-plan--baseline {
+  opacity: 0.58;
 }
 
-.counterfactual-side--adapted {
-  background: color-mix(in srgb, var(--proof-emotion) 9%, rgba(255, 255, 255, 0.025));
-  border-color: color-mix(in srgb, var(--proof-emotion) 52%, var(--line));
-  box-shadow: inset 0 2px 0 color-mix(in srgb, var(--proof-emotion) 70%, transparent);
+.proof-plan--adapted {
+  padding-left: 10px;
+  border-left: 2px solid var(--proof-emotion);
 }
 
-.counterfactual-side > span {
+.proof-plan > span {
   color: var(--dim);
   font-size: 0.47rem;
 }
 
-.counterfactual-side--adapted > span,
-.counterfactual-side--adapted > strong {
+.proof-plan--adapted > span,
+.proof-plan--adapted > strong {
   color: var(--proof-emotion);
 }
 
-.counterfactual-side > strong {
+.proof-plan > strong {
   color: var(--muted);
-  font-size: 0.67rem;
-}
-
-.counterfactual-side > p {
-  max-height: 120px;
-  margin: 0;
-  overflow: auto;
-  color: var(--fg);
-  font-size: 0.67rem;
-  line-height: 1.42;
-}
-
-.counterfactual-side > small {
-  margin-top: auto;
-  color: var(--dim);
-  font-size: 0.49rem;
-  line-height: 1.35;
+  font-size: clamp(0.86rem, 1.2vw, 1.05rem);
 }
 
 .counterfactual-proof > footer {

@@ -1238,24 +1238,14 @@ export function App() {
           confidence={userCrowd.confidence}
         >
           {judgeProofActive ? (
-            <aside className={`proof-signal-card proof-signal-card--${demoEmotion}`}>
-              <header>
-                <span>{proofStage === 'baseline' ? 'CONTROL INPUT' : 'ADAPTED INPUT'}</span>
-                <strong>
-                  {proofStage === 'baseline'
-                    ? 'Nonverbal context withheld'
-                    : `${EMOTION_LABELS[demoEmotion]} face + voice`}
-                </strong>
-              </header>
-              <SignalChip label="Face model" signal={faceSignal} />
-              <SignalChip label="Voice energy" signal={prosodySignal} caveat="prosody heuristic" />
-              {languageSignal ? <SignalChip label="Words · Gemma" signal={languageSignal} caveat="transcript language" /> : null}
-              <small>
+            <div className={`proof-signal-inline proof-signal-inline--${demoEmotion}`}>
+              <strong>{proofStage === 'baseline' ? 'WORDS ONLY' : EMOTION_LABELS[demoEmotion]}</strong>
+              <span>
                 {proofStage === 'baseline'
-                  ? 'Same words. These two signals are not sent to Gemma.'
-                  : 'Labeled rehearsal signals. No camera or microphone is used.'}
-              </small>
-            </aside>
+                  ? 'face + voice withheld'
+                  : `face ${confidenceLabel(faceSignal.confidence)} · voice ${confidenceLabel(prosodySignal.confidence)} · labeled demo`}
+              </span>
+            </div>
           ) : (
             <>
               <div className="camera-card">
@@ -1284,11 +1274,7 @@ export function App() {
           <span style={{ height: `${Math.round(contextAxisValue * 100)}%` }} />
         </div>
 
-        {judgeProofActive ? (
-          <div className="proof-axis-callout">
-            <span>{contextAxisCopy}</span>
-          </div>
-        ) : (
+        {!judgeProofActive ? (
           <div className="conversation-control">
             <span className="context-impact-readout">{contextAxisCopy}</span>
             <button
@@ -1307,7 +1293,7 @@ export function App() {
               </small>
             </button>
           </div>
-        )}
+        ) : null}
 
         <CrowdPane
           side="model"
@@ -1325,25 +1311,17 @@ export function App() {
               >
                 <header>
                   <span>CAUSAL PROOF</span>
-                  <strong>SAME WORDS · TWO CONTEXTS · SAME GEMMA</strong>
+                  <strong>SAME WORDS · DIFFERENT HUMAN CONTEXT</strong>
                 </header>
-                <div className="counterfactual-grid">
-                  <article className="counterfactual-side counterfactual-side--baseline">
-                    <span>TRANSCRIPT ONLY</span>
+                <div className="proof-plan-flow">
+                  <article className="proof-plan proof-plan--baseline">
+                    <span>WORDS ONLY</span>
                     <strong>{proofBaselinePlan}</strong>
-                    <p>{counterfactualProof.baseline.response}</p>
-                    <small>No face · no voice context · no synthesized audio</small>
                   </article>
-                  <article className="counterfactual-side counterfactual-side--adapted">
+                  <i aria-hidden="true">→</i>
+                  <article className="proof-plan proof-plan--adapted">
                     <span>+ {EMOTION_LABELS[counterfactualProof.emotion].toUpperCase()} FACE + VOICE</span>
                     <strong>{proofAdaptedPlan}</strong>
-                    <p>
-                      {counterfactualProof.adapted?.response
-                        ?? (proofStage === 'failed'
-                          ? 'The adapted run failed. The transcript-only control is preserved; press Prove it to retry.'
-                          : 'Gemma is rerunning the same words with the labeled nonverbal signal…')}
-                    </p>
-                    <small>Only this side receives the injected context and expressive voice</small>
                   </article>
                 </div>
                 <footer>{proofOutcomeCopy}{proofShiftCopy}</footer>

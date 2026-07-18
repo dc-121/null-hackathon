@@ -29,8 +29,9 @@ import { PARTICLES, particleGeometries, type ParticleShape } from './particles.j
 // A smaller cast keeps each person readable and gives the two emotional
 // populations room to breathe. Density should communicate a mixture, not
 // turn the experience into visual noise.
-const CROWD_SIZE = 96;
+const CROWD_SIZE = 36;
 const MAX_AGENTS = CROWD_SIZE;
+const FIGURE_SCALE = 1.42;
 
 /**
  * Where agents may walk, derived from the camera frustum at resize rather than
@@ -59,7 +60,7 @@ interface Bounds {
 const CURSOR_RADIUS = 6;
 
 /** Bodies are never allowed closer than this. Roughly shoulder to shoulder. */
-const MIN_SEPARATION = 1.35;
+const MIN_SEPARATION = 1.95;
 
 const EMITTER_SHAPES = ['drop', 'puff', 'heart', 'spark'] as const;
 
@@ -176,8 +177,8 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
   const solidMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.9 });
 
   const parts = {
-    head: new THREE.InstancedMesh(new THREE.SphereGeometry(0.27, 16, 14), mat, MAX_AGENTS),
-    hair: new THREE.InstancedMesh(new THREE.SphereGeometry(0.29, 14, 10, 0, Math.PI * 2, 0, 1.5), mat, MAX_AGENTS),
+    head: new THREE.InstancedMesh(new THREE.SphereGeometry(0.31, 16, 14), mat, MAX_AGENTS),
+    hair: new THREE.InstancedMesh(new THREE.SphereGeometry(0.33, 14, 10, 0, Math.PI * 2, 0, 1.5), mat, MAX_AGENTS),
     torso: new THREE.InstancedMesh(limb(0.25, 0.72), mat, MAX_AGENTS),
     armL: new THREE.InstancedMesh(limb(0.075, 0.54), mat, MAX_AGENTS),
     armR: new THREE.InstancedMesh(limb(0.075, 0.54), mat, MAX_AGENTS),
@@ -187,18 +188,18 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
     legR: new THREE.InstancedMesh(limb(0.09, 0.58), mat, MAX_AGENTS),
     footL: new THREE.InstancedMesh(new THREE.SphereGeometry(0.11, 8, 7), mat, MAX_AGENTS),
     footR: new THREE.InstancedMesh(new THREE.SphereGeometry(0.11, 8, 7), mat, MAX_AGENTS),
-    eyeL: new THREE.InstancedMesh(new THREE.BoxGeometry(0.062, 0.075, 0.05), eyeMat, MAX_AGENTS),
-    eyeR: new THREE.InstancedMesh(new THREE.BoxGeometry(0.062, 0.075, 0.05), eyeMat, MAX_AGENTS),
-    browL: new THREE.InstancedMesh(new THREE.BoxGeometry(0.085, 0.022, 0.04), eyeMat, MAX_AGENTS),
-    browR: new THREE.InstancedMesh(new THREE.BoxGeometry(0.085, 0.022, 0.04), eyeMat, MAX_AGENTS),
+    eyeL: new THREE.InstancedMesh(new THREE.BoxGeometry(0.085, 0.1, 0.06), eyeMat, MAX_AGENTS),
+    eyeR: new THREE.InstancedMesh(new THREE.BoxGeometry(0.085, 0.1, 0.06), eyeMat, MAX_AGENTS),
+    browL: new THREE.InstancedMesh(new THREE.BoxGeometry(0.12, 0.032, 0.05), eyeMat, MAX_AGENTS),
+    browR: new THREE.InstancedMesh(new THREE.BoxGeometry(0.12, 0.032, 0.05), eyeMat, MAX_AGENTS),
     // Half-torus. Flipping it 180 degrees turns a frown into a smile, so one
     // geometry covers the whole range.
     mouth: new THREE.InstancedMesh(
-      new THREE.TorusGeometry(0.085, 0.02, 4, 10, Math.PI),
+      new THREE.TorusGeometry(0.11, 0.026, 4, 12, Math.PI),
       eyeMat,
       MAX_AGENTS
     ),
-    mouthOpen: new THREE.InstancedMesh(new THREE.SphereGeometry(0.075, 9, 7), eyeMat, MAX_AGENTS),
+    mouthOpen: new THREE.InstancedMesh(new THREE.SphereGeometry(0.095, 9, 7), eyeMat, MAX_AGENTS),
   };
 
   // One instanced mesh per particle SHAPE, shared across the emotions that use
@@ -670,7 +671,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
         a.facing += diff * 0.09;
       }
       const yaw = a.facing;
-      const h = a.height * arch.heightBias * (0.55 + a.blend * 0.45);
+      const h = a.height * arch.heightBias * (0.55 + a.blend * 0.45) * FIGURE_SCALE;
       const len = arch.limbLength;
       const myLean = crowdLean + arch.leanBias + p.lean;
       const headPitch = myLean * 0.7 + p.headDrop;
@@ -679,6 +680,18 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
       const hipY = (0.58 * len + p.bounce * arch.bounceBias) * h;
       const cy = Math.cos(yaw);
       const sy = Math.sin(yaw);
+
+      // Keep the body moving naturally, but let the head acknowledge the
+      // viewer. Without this, the clearest smile or frown is invisible as soon
+      // as a person walks sideways or away from the camera. The capped turn
+      // still reads as a neck turn instead of an uncanny backwards head.
+      const cameraYaw = Math.atan2(camera.position.x - a.pos.x, camera.position.z - a.pos.z);
+      let cameraDiff = cameraYaw - yaw;
+      while (cameraDiff > Math.PI) cameraDiff -= Math.PI * 2;
+      while (cameraDiff < -Math.PI) cameraDiff += Math.PI * 2;
+      const headYaw = yaw + Math.max(-1.15, Math.min(1.15, cameraDiff)) * 0.88;
+      const headCy = Math.cos(headYaw);
+      const headSy = Math.sin(headYaw);
 
       shirt.setHSL(arch.hue, arch.sat, arch.light);
       // One skin hue across the crowd, varying only in lightness.
@@ -760,7 +773,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
       const headX = a.pos.x + Math.sin(myLean) * sy * 0.2 * h;
       const headZ = a.pos.z + Math.sin(myLean) * cy * 0.2 * h;
       dummy.position.set(headX, headY, headZ);
-      dummy.rotation.set(headPitch, yaw, p.sway * 1.4);
+      dummy.rotation.set(headPitch, headYaw, p.sway * 1.4);
       dummy.scale.setScalar(h * arch.headScale);
       dummy.updateMatrix();
       parts.head.setMatrixAt(i, dummy.matrix);
@@ -780,11 +793,11 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
         [parts.eyeR, 1],
       ] as const) {
         dummy.position.set(
-          headX + sy * eyeR + cy * dir * 0.1 * h * arch.headScale,
+          headX + headSy * eyeR + headCy * dir * 0.1 * h * arch.headScale,
           headY + 0.02 * h,
-          headZ + cy * eyeR - sy * dir * 0.1 * h * arch.headScale
+          headZ + headCy * eyeR - headSy * dir * 0.1 * h * arch.headScale
         );
-        dummy.rotation.set(0, yaw, 0);
+        dummy.rotation.set(0, headYaw, 0);
         dummy.scale.setScalar(h * arch.headScale);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
@@ -800,11 +813,11 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
         [parts.browR, 1],
       ] as const) {
         dummy.position.set(
-          headX + sy * faceZ + cy * dir * 0.1 * h * arch.headScale,
+          headX + headSy * faceZ + headCy * dir * 0.1 * h * arch.headScale,
           browY,
-          headZ + cy * faceZ - sy * dir * 0.1 * h * arch.headScale
+          headZ + headCy * faceZ - headSy * dir * 0.1 * h * arch.headScale
         );
-        dummy.rotation.set(0, yaw, dir * arch.brow * 0.5);
+        dummy.rotation.set(0, headYaw, dir * arch.brow * 0.5);
         dummy.scale.setScalar(h * arch.headScale);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
@@ -813,8 +826,8 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
       // mouth — the half-torus flips to turn a frown into a smile, and
       // flattens toward a line as it approaches neutral.
       const mouthY = headY - 0.1 * h * arch.headScale;
-      dummy.position.set(headX + sy * faceZ, mouthY, headZ + cy * faceZ);
-      dummy.rotation.set(0, yaw, arch.mouth > 0 ? Math.PI : 0);
+      dummy.position.set(headX + headSy * faceZ, mouthY, headZ + headCy * faceZ);
+      dummy.rotation.set(0, headYaw, arch.mouth > 0 ? Math.PI : 0);
       dummy.scale.set(
         h * arch.headScale,
         h * arch.headScale * (0.25 + Math.abs(arch.mouth) * 0.75),
@@ -824,8 +837,8 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
       parts.mouth.setMatrixAt(i, dummy.matrix);
 
       if (arch.mouthOpen > 0.01) {
-        dummy.position.set(headX + sy * faceZ, mouthY - 0.02 * h, headZ + cy * faceZ);
-        dummy.rotation.set(0, yaw, 0);
+        dummy.position.set(headX + headSy * faceZ, mouthY - 0.02 * h, headZ + headCy * faceZ);
+        dummy.rotation.set(0, headYaw, 0);
         dummy.scale.set(
           h * arch.headScale * (0.6 + arch.mouthOpen * 0.5),
           h * arch.headScale * arch.mouthOpen,
@@ -848,12 +861,23 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
         if (a.emit > 1) a.emit -= 1;
         const life = a.emit;
         const wobble = Math.sin(life * Math.PI * 1.4 + a.seed) * spec.drift;
-        dummy.position.set(
-          headX + wobble * h + Math.sin(a.seed) * 0.16 * h,
-          (spec.fromEyes ? headY - 0.02 * h : headY + 0.32 * h) + life * spec.rise * h,
-          headZ + Math.cos(a.seed) * 0.16 * h + (spec.fromEyes ? 0.16 * h * cy : 0)
-        );
-        dummy.rotation.set(0, yaw, wobble * 0.6);
+        if (spec.fromEyes) {
+          const tearSide = Math.sin(a.seed) < 0 ? -1 : 1;
+          const tearOffset = tearSide * 0.1 * h * arch.headScale + wobble * h;
+          dummy.position.set(
+            headX + headSy * faceZ + headCy * tearOffset,
+            headY + 0.01 * h + life * spec.rise * h,
+            headZ + headCy * faceZ - headSy * tearOffset
+          );
+          dummy.rotation.set(0, headYaw, wobble * 0.6);
+        } else {
+          dummy.position.set(
+            headX + wobble * h + Math.sin(a.seed) * 0.16 * h,
+            headY + 0.32 * h + life * spec.rise * h,
+            headZ + Math.cos(a.seed) * 0.16 * h
+          );
+          dummy.rotation.set(0, yaw, wobble * 0.6);
+        }
         // Fade by shrinking — alpha can't vary per instance on a shared material.
         const grow = 1 + (spec.grow - 1) * life;
         const fade = 1 - life * life;

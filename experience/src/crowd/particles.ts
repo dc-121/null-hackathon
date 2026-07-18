@@ -55,12 +55,12 @@ export const PARTICLES: Record<string, ParticleSpec> = {
     // drop, so the fall distance is short and the cycle is long.
     shape: 'drop',
     fromEyes: true,
-    rise: -0.55,
-    drift: 0.05,
-    size: 0.085,
-    grow: 0.85,
-    color: [0.55, 0.7, 0.72],
-    rate: 0.004,
+    rise: -0.72,
+    drift: 0.07,
+    size: 0.14,
+    grow: 0.9,
+    color: [0.55, 0.88, 0.9],
+    rate: 0.008,
   },
   loving: {
     // Hearts, rising and swaying.

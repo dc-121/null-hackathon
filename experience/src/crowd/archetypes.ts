@@ -147,11 +147,11 @@ export const ARCHETYPES: Archetype[] = [
     // Clear cobalt-blue clothing stays recognizable against the near-black
     // floor. Posture and gait communicate sadness; darkness should not make
     // the people themselves disappear.
-    hue: 0.59, sat: 0.78, light: 0.58,
-    hairHue: 0.61, hairSat: 0.5, hairLight: 0.34,
-    skin: 0.7, mouth: -0.85, mouthOpen: 0, brow: 0.85,
-    headScale: 1.02, girth: 0.88, limbLength: 1.12, heightBias: 0.95, hair: 0.4,
-    leanBias: 0.24, hunchBias: 0.75, bounceBias: 0.2, speedBias: 0.42,
+    hue: 0.59, sat: 0.88, light: 0.62,
+    hairHue: 0.61, hairSat: 0.56, hairLight: 0.38,
+    skin: 0.72, mouth: -1, mouthOpen: 0, brow: 1,
+    headScale: 1.12, girth: 0.9, limbLength: 1.12, heightBias: 0.98, hair: 0.4,
+    leanBias: 0.32, hunchBias: 0.86, bounceBias: 0.16, speedBias: 0.38,
     gait: 'trudge', behavior: 'withdraw',
     affinity: (i, _e, m) => clamp01(1 - i) * clamp01(1 - m) * 2.2,
   },
