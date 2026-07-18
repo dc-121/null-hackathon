@@ -23,6 +23,27 @@
 
 import type { Gait } from './archetypes.js';
 
+/**
+ * Cycle rate per gait, relative to how fast the agent is moving.
+ *
+ * Speed and cadence are NOT the same dial. A heavy gait covers ground with few,
+ * slow, weighty steps; a frightened one takes many small quick ones at the same
+ * velocity. Driving cadence straight off speed makes the fast archetypes
+ * flicker — angry especially, since its bounce already runs at twice the stride
+ * (once per footfall).
+ */
+export const CADENCE: Record<Gait, number> = {
+  stomp: 0.5,
+  trudge: 0.45,
+  creep: 0.5,
+  drift: 0.45,
+  walk: 1,
+  skip: 0.75,
+  stagger: 0.7,
+  run: 1.1,
+  scurry: 1.45,
+};
+
 export interface Pose {
   /** Leg swing, radians. Right leg is the negation. */
   leg: number;
@@ -61,7 +82,7 @@ export function pose(gait: Gait, phase: number, energy: number, seed: number): P
         leg: skew(phase, 0.35) * (0.75 + energy * 0.5) + 0.22,
         arm: -skew(phase, 0.35) * (0.8 + energy * 0.6) - 0.3,
         armSpread: 0.3 + energy * 0.15,
-        bounce: air * (0.2 + energy * 0.26),
+        bounce: air * (0.11 + energy * 0.13),
         lean: -0.1,
         sway: c * 0.09,
         headDrop: -0.12,
@@ -77,7 +98,10 @@ export function pose(gait: Gait, phase: number, energy: number, seed: number): P
         leg: skew(phase, -0.3) * (0.7 + energy * 0.5),
         arm: -skew(phase, -0.3) * (0.7 + energy * 0.4),
         armSpread: 0.42 + energy * 0.2,
-        bounce: (1 - impact) * (0.07 + energy * 0.1),
+        // Shallow on purpose. The weight reads through the DOWNWARD accent and
+        // the swagger, not through height — a tall bounce just looks like
+        // hopping.
+        bounce: (1 - impact) * (0.025 + energy * 0.035),
         lean: 0.26 + energy * 0.14,
         sway: s * 0.17,
         headDrop: 0.06,
@@ -107,7 +131,7 @@ export function pose(gait: Gait, phase: number, energy: number, seed: number): P
         leg: s * (0.4 + energy * 0.3),
         arm: -s * 0.28,
         armSpread: -0.3,
-        bounce: step * (0.02 + energy * 0.04),
+        bounce: step * (0.014 + energy * 0.025),
         lean: 0.2,
         sway: dart * 0.14,
         headDrop: 0.2 + dart * 0.12,
@@ -120,7 +144,7 @@ export function pose(gait: Gait, phase: number, energy: number, seed: number): P
         leg: s * (0.95 + energy * 0.6),
         arm: -s * (0.85 + energy * 0.5),
         armSpread: 0.16,
-        bounce: (1 - step) * (0.09 + energy * 0.14),
+        bounce: (1 - step) * (0.05 + energy * 0.07),
         lean: 0.24 + energy * 0.18,
         sway: 0,
         headDrop: 0.04,
@@ -149,7 +173,7 @@ export function pose(gait: Gait, phase: number, energy: number, seed: number): P
         leg: s * (0.6 + energy * 0.5) + wobble * 0.3,
         arm: -s * (0.5 + energy * 0.4) + wobble * 0.5,
         armSpread: 0.34 + Math.abs(wobble) * 0.3,
-        bounce: step * (0.05 + energy * 0.07),
+        bounce: step * (0.03 + energy * 0.04),
         lean: 0.1 + wobble * 0.12,
         sway: wobble * 0.16,
         headDrop: -0.14,
@@ -176,7 +200,7 @@ export function pose(gait: Gait, phase: number, energy: number, seed: number): P
         leg: s * (0.5 + energy * 0.5),
         arm: -s * (0.42 + energy * 0.45),
         armSpread: 0.1,
-        bounce: (1 - step) * (0.035 + energy * 0.07),
+        bounce: (1 - step) * (0.022 + energy * 0.04),
         lean: 0,
         sway: s * 0.04,
         headDrop: 0,

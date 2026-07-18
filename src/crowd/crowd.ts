@@ -15,7 +15,7 @@
 import * as THREE from 'three';
 import { store, trimEmphases, type Side } from '../state/emotion.js';
 import { ARCHETYPES, distribution } from './archetypes.js';
-import { pose } from './gait.js';
+import { pose, CADENCE } from './gait.js';
 import { PARTICLES, particleGeometries, type ParticleShape } from './particles.js';
 
 const MAX_AGENTS = 160;
@@ -51,7 +51,7 @@ const EMITTER_SHAPES = ['drop', 'puff', 'heart', 'spark'] as const;
 
 /** Velocity carry-over per frame. High = smooth paths, slow to turn. */
 const INERTIA = 0.93;
-const WANDER_FORCE = 0.0022;
+const WANDER_FORCE = 0.0011;
 /** How far from the edge they start turning back, in world units. */
 const EDGE_MARGIN = 2;
 const EDGE_FORCE = 0.0016;
@@ -364,7 +364,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
     // Deliberately unhurried. A crowd that darts around reads as noise; the
     // emotion is in posture, gait and behaviour, and those need time to be
     // seen. Everything below is scaled off this.
-    const speed = 0.006 + intensity * 0.045;
+    const speed = 0.0035 + intensity * 0.022;
     const turn = 0.006 + movement * 0.045;
 
     const crowdLean = effort * 0.34;
@@ -408,14 +408,14 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
             const dx = t.pos.x - a.pos.x;
             const dz = t.pos.z - a.pos.z;
             const d = Math.hypot(dx, dz) || 1;
-            a.vel.x += (dx / d) * 0.012;
-            a.vel.z += (dz / d) * 0.012;
+            a.vel.x += (dx / d) * 0.006;
+            a.vel.z += (dz / d) * 0.006;
             if (d < 1.6 && a.cooldown <= 0) {
               a.action = 1;
               a.cooldown = 40 + Math.random() * 40;
               // knock them back
-              t.vel.x += (dx / d) * 0.11;
-              t.vel.z += (dz / d) * 0.11;
+              t.vel.x += (dx / d) * 0.055;
+              t.vel.z += (dz / d) * 0.055;
               t.frozen = 8;
               a.target = -1;
             }
@@ -430,8 +430,8 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
             const dx = a.pos.x - o.pos.x;
             const dz = a.pos.z - o.pos.z;
             const d = Math.hypot(dx, dz) || 1;
-            a.vel.x += (dx / d) * 0.014;
-            a.vel.z += (dz / d) * 0.014;
+            a.vel.x += (dx / d) * 0.007;
+            a.vel.z += (dz / d) * 0.007;
           }
           break;
         }
@@ -440,8 +440,8 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
           // Bolts, changes its mind constantly, and sweats doing it.
           if (a.cooldown <= 0) {
             const ang = Math.random() * Math.PI * 2;
-            a.vel.x += Math.sin(ang) * 0.05;
-            a.vel.z += Math.cos(ang) * 0.05;
+            a.vel.x += Math.sin(ang) * 0.022;
+            a.vel.z += Math.cos(ang) * 0.022;
             a.cooldown = 20 + Math.random() * 30;
           }
           break;
@@ -458,7 +458,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
             const dz = t.pos.z - a.pos.z;
             const d = Math.hypot(dx, dz) || 1;
             // Closes, then lingers rather than colliding.
-            const pull = d > 2.4 ? 0.009 : -0.005;
+            const pull = d > 2.4 ? 0.0045 : -0.0025;
             a.vel.x += (dx / d) * pull;
             a.vel.z += (dz / d) * pull;
           }
@@ -579,10 +579,10 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
         a.wander = Math.PI / 2;
       }
 
-      const energy = Math.min(1, current * 26);
+      const energy = Math.min(1, current * 52);
       // Frequency is capped and does NOT take bounceBias — that scales
       // amplitude. Letting it scale rate makes fast archetypes alias.
-      a.phase += Math.min(0.26, 0.03 + current * 3.4);
+      a.phase += Math.min(0.13, (0.014 + current * 1.7) * CADENCE[arch.gait]);
 
       // --- pose ---------------------------------------------------------
       const p = pose(arch.gait, a.phase, energy, a.seed);
