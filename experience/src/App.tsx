@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { CrowdPane } from './crowd/CrowdPane.js';
 import {
   SHARED_EMOTIONS,
@@ -117,18 +117,8 @@ const PHASE_COPY: Record<Phase, string> = {
   error: 'The last step could not complete. Nothing has been fabricated.',
 };
 
-const PIPELINE = ['listen', 'transcribe', 'Gemma', 'speak'] as const;
 const MAX_RECORDING_SECONDS = 45;
 const MODEL_RESULT_HOLD_MS = 5 * 60 * 1000;
-
-function phasePosition(phase: Phase): number {
-  if (phase === 'listening') return 0;
-  if (phase === 'transcribing') return 1;
-  if (phase === 'thinking') return 2;
-  if (phase === 'awaiting-audio' || phase === 'speaking') return 3;
-  if (phase === 'holding' || phase === 'complete') return 4;
-  return -1;
-}
 
 function confidenceLabel(value: number): string {
   return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
@@ -233,19 +223,6 @@ function prosodyView(snapshot: ProsodySnapshot): SignalView {
   };
 }
 
-function EmotionBars({ scores, active = true }: { scores: EmotionScores; active?: boolean }) {
-  return (
-    <div className={`emotion-bars${active ? '' : ' is-muted'}`} aria-label="Five-emotion mixture">
-      {SHARED_EMOTIONS.map((emotion) => (
-        <span className={`emotion-meter emotion-meter--${emotion}`} key={emotion}>
-          <i style={{ width: `${Math.round(scores[emotion] * 100)}%` }} />
-          <small>{EMOTION_LABELS[emotion]}</small>
-        </span>
-      ))}
-    </div>
-  );
-}
-
 function SignalChip({ label, signal, caveat }: { label: string; signal: SignalView; caveat?: string }) {
   const status = signal.status === 'live' || signal.status === 'demo'
     ? `${signal.dominant ? EMOTION_LABELS[signal.dominant] : 'mixed'} · ${confidenceLabel(signal.confidence)}`
@@ -265,23 +242,6 @@ function SignalChip({ label, signal, caveat }: { label: string; signal: SignalVi
       </div>
       {caveat ? <small>{caveat}</small> : null}
     </div>
-  );
-}
-
-function Pipeline({ phase }: { phase: Phase }) {
-  const position = phasePosition(phase);
-  return (
-    <ol className="pipeline" aria-label="Conversation pipeline">
-      {PIPELINE.map((step, index) => (
-        <li
-          key={step}
-          className={index < position ? 'is-done' : index === position ? 'is-active' : ''}
-          aria-current={index === position ? 'step' : undefined}
-        >
-          <span>{index + 1}</span>{step}
-        </li>
-      ))}
-    </ol>
   );
 }
 
@@ -316,6 +276,127 @@ function phraseForTime(
     if (progress <= boundary) return index;
   }
   return phrases.length - 1;
+}
+
+interface TimedVoiceWord {
+  text: string;
+  emotion: Emotion | null;
+  intensity: number;
+  start: number;
+  end: number;
+}
+
+function timedVoiceWords(
+  phrases: ConversationPhrase[],
+  response: string,
+  duration: number
+): TimedVoiceWord[] {
+  const sourcePhrases = phrases.length
+    ? phrases
+    : [{
+        text: response,
+        emotion: null,
+        intensity: 0,
+        startSeconds: 0,
+        endSeconds: duration || Math.max(2, response.length / 14),
+      }];
+  const fallbackDuration = duration > 0
+    ? duration
+    : Math.max(2, sourcePhrases.reduce((sum, phrase) => sum + phrase.text.length, 0) / 14);
+  const totalCharacters = sourcePhrases.reduce(
+    (sum, phrase) => sum + Math.max(1, phrase.text.length),
+    0
+  );
+  let characterCursor = 0;
+  const result: TimedVoiceWord[] = [];
+
+  sourcePhrases.forEach((phrase) => {
+    const fallbackStart = fallbackDuration * characterCursor / totalCharacters;
+    characterCursor += Math.max(1, phrase.text.length);
+    const fallbackEnd = fallbackDuration * characterCursor / totalCharacters;
+    const start = phrase.startSeconds !== null && Number.isFinite(phrase.startSeconds)
+      ? phrase.startSeconds
+      : fallbackStart;
+    const end = phrase.endSeconds !== null
+      && Number.isFinite(phrase.endSeconds)
+      && phrase.endSeconds > start
+      ? phrase.endSeconds
+      : Math.max(start + 0.25, fallbackEnd);
+    const words = phrase.text.match(/\S+/g) ?? [];
+    const totalWeight = words.reduce((sum, word) => sum + Math.max(1, word.length), 0);
+    let wordCursor = 0;
+    words.forEach((word) => {
+      const wordStart = start + (end - start) * wordCursor / Math.max(1, totalWeight);
+      wordCursor += Math.max(1, word.length);
+      const wordEnd = start + (end - start) * wordCursor / Math.max(1, totalWeight);
+      result.push({
+        text: word,
+        emotion: phrase.emotion,
+        intensity: phrase.intensity,
+        start: wordStart,
+        end: Math.max(wordStart + 0.06, wordEnd),
+      });
+    });
+  });
+  return result;
+}
+
+function ModelVoice({
+  conversation,
+  playbackTime,
+  playbackDuration,
+  phase,
+  dominant,
+  strength,
+  needsPlay,
+  onPlay,
+}: {
+  conversation: ConversationResponse;
+  playbackTime: number;
+  playbackDuration: number;
+  phase: Phase;
+  dominant: Emotion | null;
+  strength: number;
+  needsPlay: boolean;
+  onPlay: () => void;
+}) {
+  const words = useMemo(
+    () => timedVoiceWords(conversation.phrases, conversation.response, playbackDuration),
+    [conversation, playbackDuration]
+  );
+  const speaking = phase === 'speaking';
+  const finished = phase === 'holding' || phase === 'complete';
+  return (
+    <section className="model-voice" aria-label="Gemma response synchronized to measured emotion">
+      <header>
+        <span>GEMMA VOICE</span>
+        <strong>{dominant ? `${EMOTION_LABELS[dominant]} · ${confidenceLabel(strength)}` : 'measured response'}</strong>
+      </header>
+      <p>
+        {words.map((word, index) => {
+          const active = speaking && playbackTime >= word.start && playbackTime < word.end;
+          const spoken = playbackTime >= word.end || finished;
+          return (
+            <span
+              key={`${index}-${word.text}`}
+              className={`model-word${active ? ' is-active' : ''}${spoken ? ' is-spoken' : ''}`}
+              style={{
+                '--word-emotion': word.emotion ? `var(--${word.emotion})` : 'var(--fg)',
+                '--word-strength': `${Math.round(word.intensity * 100)}%`,
+              } as CSSProperties}
+            >
+              {word.text}
+            </span>
+          );
+        })}
+      </p>
+      {(needsPlay || finished) && conversation.speechId ? (
+        <button type="button" className="voice-play" onClick={onPlay}>
+          {needsPlay ? '▶ Play expressive voice' : '↻ Replay voice'}
+        </button>
+      ) : null}
+    </section>
+  );
 }
 
 export function App() {
@@ -361,6 +442,8 @@ export function App() {
   const [userCrowd, setUserCrowd] = useState<CrowdView>(() => currentCrowdView('user'));
   const [modelCrowd, setModelCrowd] = useState<CrowdView>(() => currentCrowdView('model'));
   const [activePhrase, setActivePhrase] = useState(-1);
+  const [playbackTime, setPlaybackTime] = useState(0);
+  const [playbackDuration, setPlaybackDuration] = useState(0);
   const [needsPlay, setNeedsPlay] = useState(false);
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
   const [demoFaceActive, setDemoFaceActive] = useState(false);
@@ -936,6 +1019,8 @@ export function App() {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
+    setPlaybackTime(0);
+    setPlaybackDuration(0);
     if (!conversation?.speechId) {
       resetAudioElement(audio);
       return;
@@ -945,6 +1030,7 @@ export function App() {
     let animationFrame = 0;
     let holdTimer = 0;
     let lastExpressionFrame = 0;
+    let lastWordFrame = 0;
     let playbackFailed = false;
     const sync = () => {
       const index = phraseForTime(conversation.phrases, audio.currentTime, audio.duration);
@@ -959,6 +1045,13 @@ export function App() {
       const phrase = conversation.phrases[index];
       const expressionPhrase = phrase?.emotion ? phrase : representative?.phrase;
       const now = performance.now();
+      if (now - lastWordFrame >= 65) {
+        setPlaybackTime(audio.currentTime);
+        if (Number.isFinite(audio.duration) && audio.duration > 0) {
+          setPlaybackDuration(audio.duration);
+        }
+        lastWordFrame = now;
+      }
       if (expressionPhrase && now - lastExpressionFrame >= 180) {
         emitModelExpression(expressionPhrase);
         lastExpressionFrame = now;
@@ -982,6 +1075,10 @@ export function App() {
     };
     const onEnded = () => {
       cancelAnimationFrame(animationFrame);
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        setPlaybackTime(audio.duration);
+        setPlaybackDuration(audio.duration);
+      }
       showModelPhrase(representative?.phrase);
       activePhraseRef.current = -1;
       setActivePhrase(-1);
@@ -1006,10 +1103,16 @@ export function App() {
       );
       setPhase('complete');
     };
+    const onLoadedMetadata = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        setPlaybackDuration(audio.duration);
+      }
+    };
     audio.addEventListener('play', onPlay);
     audio.addEventListener('pause', onPause);
     audio.addEventListener('ended', onEnded);
     audio.addEventListener('error', onError);
+    audio.addEventListener('loadedmetadata', onLoadedMetadata);
     audio.src = audioSource;
     audio.load();
     void audio.play().catch(() => {
@@ -1024,6 +1127,7 @@ export function App() {
       audio.removeEventListener('pause', onPause);
       audio.removeEventListener('ended', onEnded);
       audio.removeEventListener('error', onError);
+      audio.removeEventListener('loadedmetadata', onLoadedMetadata);
       if (audio.getAttribute('src') === audioSource) resetAudioElement(audio);
     };
   }, [conversation]);
@@ -1063,19 +1167,12 @@ export function App() {
   const displayedModelPhrase = activeEmotionalPhrase ?? (
     modelCrowd.active ? representativeModelPhrase : null
   );
-  const carriedTurnTone = Boolean(modelPhrase && !modelPhrase.emotion && displayedModelPhrase);
-  const modelToneScope = carriedTurnTone
-    ? 'CARRIED TURN TONE'
-    : activeEmotionalPhrase
-      ? 'ACTIVE PHRASE'
-      : 'STRONGEST PHRASE';
   const displayedModelEmotion = displayedModelPhrase
     ? displayedModelPhrase.emotion
     : modelCrowd.dominant;
   const displayedModelStrength = displayedModelPhrase
     ? displayedModelPhrase.intensity
     : modelCrowd.confidence;
-  const displayedModelScores = displayedModelPhrase?.scores ?? modelCrowd.scores;
   const responseContext = conversation?.responseContext;
   const proofBaselineContext = counterfactualProof?.baseline.responseContext;
   const proofAdaptedContext = counterfactualProof?.adapted?.responseContext;
@@ -1197,17 +1294,26 @@ export function App() {
             ? 'Ready with a permanently labeled rehearsal fallback. Typed conversation remains available.'
           : 'Ready. Use the typed fallback below to begin.'
         : PHASE_COPY[phase];
+  const showStageStatus = Boolean(
+    proofStage
+    || phase === 'requesting'
+    || phase === 'listening'
+    || phase === 'transcribing'
+    || phase === 'thinking'
+    || phase === 'awaiting-audio'
+    || phase === 'speaking'
+    || phase === 'holding'
+    || phase === 'error'
+  );
 
   return (
     <main className={`app-shell${judgeProofActive ? ' is-proof-mode' : ''}${conversation ? ' has-conversation' : ''}`}>
-      <header className="topbar">
-        <a className="brand" href="/" aria-label="Null Mirror home">
+      <section className="mirror-stage">
+        <a className="stage-brand" href="/" aria-label="Null Mirror home">
           <span aria-hidden="true">◌</span>
-          <div><strong>NULL MIRROR</strong><small>the context speech-to-text deletes</small></div>
+          <strong>NULL MIRROR</strong>
         </a>
-        <Pipeline phase={phase} />
-        <div className="topbar-badges">
-          <span className="local-badge">LOCAL CAMERA PIPELINE</span>
+        <div className="stage-badges">
           {demoRequested ? (
             <span className={`demo-badge${demoActive || judgeProofActive ? ' is-active' : ''}`}>
               {proofStage === 'baseline'
@@ -1222,14 +1328,12 @@ export function App() {
             </span>
           ) : null}
         </div>
-      </header>
-
-      <p className="live-status" role="status" aria-live="polite">
-        <span className={`phase-light phase-light--${phase}`} aria-hidden="true" />
-        {phaseCopy}
-      </p>
-
-      <section className="mirror-stage">
+        {showStageStatus ? (
+          <p className={`stage-status stage-status--${phase}`} role="status" aria-live="polite">
+            <span className={`phase-light phase-light--${phase}`} aria-hidden="true" />
+            {phaseCopy}
+          </p>
+        ) : null}
         <CrowdPane
           side="user"
           label="01 · human signal"
@@ -1267,14 +1371,19 @@ export function App() {
               </div>
             </>
           )}
-          <EmotionBars scores={userCrowd.scores} active={userCrowd.active} />
+          {conversation?.transcript ? (
+            <aside className="human-utterance">
+              <span>YOU SAID</span>
+              <p>{conversation.transcript}</p>
+            </aside>
+          ) : null}
         </CrowdPane>
 
         <div className="mirror-axis" aria-hidden="true">
           <span style={{ height: `${Math.round(contextAxisValue * 100)}%` }} />
         </div>
 
-        {!judgeProofActive ? (
+        {!judgeProofActive && recorderAvailable ? (
           <div className="conversation-control">
             <span className="context-impact-readout">{contextAxisCopy}</span>
             <button
@@ -1303,7 +1412,8 @@ export function App() {
           confidence={displayedModelStrength}
           metricLabel="layer-28 alignment"
         >
-          <div className={`response-card${conversation ? ' has-response' : ''}`}>
+          {counterfactualProof || responseContext ? (
+            <div className={`response-card${conversation ? ' has-response' : ''}`}>
             {counterfactualProof ? (
               <section
                 className={`counterfactual-proof counterfactual-proof--${counterfactualProof.emotion}`}
@@ -1351,28 +1461,30 @@ export function App() {
                 <i aria-hidden="true"><b style={{ width: `${Math.round(responseContext.nonverbalWeight * 100)}%` }} /></i>
               </div>
             ) : null}
-            {!counterfactualProof ? <span>GEMMA · LAYER 28</span> : null}
-            {!counterfactualProof ? (
-              <blockquote>
-                {modelPhrase?.text ?? conversation?.response ?? 'The response will appear here, then move through the crowd phrase by phrase.'}
-              </blockquote>
-            ) : null}
-            {displayedModelPhrase && !counterfactualProof ? (
-              <small className="phrase-evidence">
-                <span><b>{modelToneScope}</b> · {displayedModelPhrase.direction || `${displayedModelPhrase.emotion} delivery`}</span>
-                <span>{confidenceLabel(displayedModelPhrase.intensity)} strength · {confidenceLabel(displayedModelPhrase.sharedMass)} shared-five coverage</span>
-              </small>
-            ) : null}
-          </div>
-          <EmotionBars scores={displayedModelScores} active={Boolean(displayedModelEmotion)} />
+            </div>
+          ) : null}
+          {conversation ? (
+            <ModelVoice
+              conversation={conversation}
+              playbackTime={playbackTime}
+              playbackDuration={playbackDuration}
+              phase={phase}
+              dominant={displayedModelEmotion}
+              strength={displayedModelStrength}
+              needsPlay={needsPlay}
+              onPlay={playResponse}
+            />
+          ) : null}
+          <audio
+            ref={audioRef}
+            hidden
+            preload="none"
+            aria-label="Gemma expressive response"
+          />
         </CrowdPane>
       </section>
 
-      <section className="conversation-dock" aria-label="Conversation transcript and controls">
-        <div className="transcript-panel">
-          <span className="dock-label">YOU SAID</span>
-          <p>{conversation?.transcript ?? 'Your transcript will stay visible here.'}</p>
-        </div>
+      <section className="floating-dock" aria-label="Conversation controls">
         <form
           className={`typed-fallback${judgeProofActive ? ' is-proof' : ''}`}
           onSubmit={(event) => {
@@ -1381,7 +1493,7 @@ export function App() {
             else submitTyped();
           }}
         >
-          <label htmlFor="typed-message">
+          <label className="sr-only" htmlFor="typed-message">
             {judgeProofActive ? 'Pick the missing human context' : 'Typed fallback'}
           </label>
           {judgeProofActive ? (
@@ -1414,28 +1526,7 @@ export function App() {
             </button>
           </div>
         </form>
-        <div className="reply-panel">
-          <span className="dock-label">IT REPLIED</span>
-          <p>{conversation?.response ?? 'Gemma’s response and expressive voice will appear here.'}</p>
-          <audio
-            ref={audioRef}
-            controls
-            hidden={!conversation?.speechId}
-            preload="none"
-            aria-label="Gemma expressive response"
-          />
-          {needsPlay ? <button type="button" className="play-button" onClick={playResponse}>Play expressive reply</button> : null}
-        </div>
       </section>
-
-      <footer className="legend-row">
-        <div className="emotion-legend" aria-label="Emotion color legend">
-          {SHARED_EMOTIONS.map((emotion) => (
-            <span key={emotion} className={`legend-${emotion}`}><i />{EMOTION_LABELS[emotion]}</span>
-          ))}
-        </div>
-        <p>Color = five-emotion mixture · human motion = measured energy · model motion = vector intensity</p>
-      </footer>
 
       {error || voiceNotice ? (
         <aside className="notice" role="alert">

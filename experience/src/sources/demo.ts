@@ -7,7 +7,7 @@ import {
   type EmotionScores,
 } from '../state/emotion.js';
 
-export const DEMO_PROOF_LINE = 'I guess the presentation is over.';
+export const DEMO_PROOF_LINE = "I'm fine. Really, I'm fine.";
 export const DEFAULT_DEMO_EMOTION: Emotion = 'sad';
 
 export interface DemoSignalUpdate {

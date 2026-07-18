@@ -147,7 +147,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x0a0a0c, 0.021);
+  scene.fog = new THREE.FogExp2(0xf4f3ee, 0.021);
 
   const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 120);
   // Steep enough that the ground plane fills the frame rather than sitting in

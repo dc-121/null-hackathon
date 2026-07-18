@@ -52,6 +52,15 @@ RESPONSE_STRATEGIES = {
     ),
 }
 
+STRATEGY_FIRST_MOVES = {
+    "celebrate": "Open by sharing their positive momentum, then ask what feels most exciting or meaningful.",
+    "support": "Open by gently acknowledging that the moment may feel heavier than the words alone suggest, then make room for them to continue.",
+    "de-escalate": "Open by recognizing the frustration without mirroring its heat, then offer one calm way forward.",
+    "reassure": "Open with a steady grounding sentence, then offer one concrete next step without minimizing the concern.",
+    "orient": "Open with brief, genuine surprise, then ask one clarifying question that helps make sense of what happened.",
+    "stay-curious": "Open with a tentative observation or question instead of assuming how they feel.",
+}
+
 STRATEGY_DELIVERY_TAGS = {
     "support": "warmly",
     "de-escalate": "calm",
@@ -547,6 +556,16 @@ def response_prompt(transcript: str, fusion: FusionResult) -> str:
         )
     modalities = "\n".join(modality_lines) or "- no reliable nonverbal signal"
     strategy, strategy_instruction = response_strategy(fusion)
+    first_move = STRATEGY_FIRST_MOVES[strategy]
+    context = explain_response_context(fusion)
+    mismatch_instruction = (
+        "The reliable nonverbal signal materially changes how the words read. "
+        "Gently acknowledge that possible mismatch in ordinary language (for "
+        "example, that the words and the moment do not seem fully aligned), "
+        "while making clear you could be wrong. "
+        if context["effect"] in {"shifted", "adjusted", "language-mixed", "mixed"}
+        else ""
+    )
     return (
         "You are the emotionally attuned half of a live conversation. "
         "Reply directly to the person in one or two concise, natural sentences. "
@@ -560,7 +579,11 @@ def response_prompt(transcript: str, fusion: FusionResult) -> str:
         f"context (fused signal strength {fusion.confidence:.0%}; {state}).\n"
         f"Evidence available to shape your tone:\n{modalities}\n\n"
         f"Conversation strategy: {strategy.upper()} — {strategy_instruction} "
-        "Make this strategy visible in what you say, not just how it sounds.\n\n"
+        "Make this strategy unmistakable in the content, not just the delivery. "
+        f"Required first move: {first_move} "
+        f"{mismatch_instruction}"
+        "Avoid generic therapy filler and do not default to asking only how the "
+        "person feels; respond specifically to their words and the available context.\n\n"
         f"The person said: {transcript.strip()}"
     )
 

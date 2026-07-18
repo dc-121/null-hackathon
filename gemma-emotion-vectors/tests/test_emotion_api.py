@@ -177,6 +177,9 @@ class FusionTests(unittest.TestCase):
         self.assertIn("- prosody: sad", prompt)
         self.assertIn("important causal cue", prompt)
         self.assertIn("Conversation strategy: SUPPORT", prompt)
+        self.assertIn("Required first move:", prompt)
+        self.assertIn("materially changes how the words read", prompt)
+        self.assertIn("Avoid generic therapy filler", prompt)
 
     def test_low_confidence_conflict_is_not_promoted_in_the_prompt(self) -> None:
         happy = {name: 0.0 for name in SHARED_EMOTIONS}
