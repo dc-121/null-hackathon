@@ -399,20 +399,23 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
       // --- behaviour ---------------------------------------------------
       switch (arch.behavior) {
         case 'strike': {
-          // Seeks someone out, closes on them, swings.
-          if (a.target < 0 || a.target >= agents.length || a.cooldown <= 0) {
-            if (a.target < 0 || a.target >= agents.length) a.target = nearest(a, i, 12);
-          }
+          // Seeks someone out, closes to arm's length, swings.
+          if (a.target < 0 || a.target >= agents.length) a.target = nearest(a, i, 12);
           const t = agents[a.target];
           if (t) {
             const dx = t.pos.x - a.pos.x;
             const dz = t.pos.z - a.pos.z;
             const d = Math.hypot(dx, dz) || 1;
-            a.vel.x += (dx / d) * 0.006;
-            a.vel.z += (dz / d) * 0.006;
-            if (d < 1.6 && a.cooldown <= 0) {
+            // Stop OUTSIDE personal space. Closing any further means the
+            // approach force and the separation force fight each other every
+            // frame, and the whole body vibrates at the contact point.
+            const reach = personalSpace + 0.4;
+            if (d > reach) {
+              a.vel.x += (dx / d) * 0.006;
+              a.vel.z += (dz / d) * 0.006;
+            } else if (a.cooldown <= 0) {
               a.action = 1;
-              a.cooldown = 40 + Math.random() * 40;
+              a.cooldown = 50 + Math.random() * 50;
               // knock them back
               t.vel.x += (dx / d) * 0.055;
               t.vel.z += (dz / d) * 0.055;
