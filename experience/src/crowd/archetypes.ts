@@ -1,3 +1,10 @@
+import {
+  SHARED_EMOTIONS,
+  normalizeEmotionScores,
+  type Emotion,
+  type EmotionScores,
+} from '../state/emotion.js';
+
 /**
  * The nine.
  *
@@ -9,6 +16,11 @@
  * threshold and no argmax anywhere. What you read is the shifting population —
  * so two feelings at once show up as two populations on screen, which is the
  * one thing a single label can never express.
+ *
+ * When a shared-five classifier is active, its explicit probability mix takes
+ * over the population target. The richer nine-archetype baseline remains for
+ * the idle simulation, but unsupported archetypes never impersonate a live
+ * detected label.
  */
 
 export type Gait =
@@ -97,8 +109,10 @@ export const ARCHETYPES: Archetype[] = [
   {
     id: 'surprised',
     coefficient: 0.0338,
-    hue: 0.15, sat: 0.72, light: 0.66,
-    hairHue: 0.12, hairSat: 0.55, hairLight: 0.45,
+    // Cyan is intentionally distinct from happy's gold so every shared
+    // emotion remains identifiable by colour at crowd scale.
+    hue: 0.52, sat: 0.76, light: 0.61,
+    hairHue: 0.54, hairSat: 0.58, hairLight: 0.38,
     skin: 0.74, mouth: 0, mouthOpen: 1, brow: 1,
     headScale: 1.24, girth: 0.95, limbLength: 0.98, heightBias: 1.0, hair: 0.85,
     leanBias: -0.22, hunchBias: -0.1, bounceBias: 1.5, speedBias: 1.1,
@@ -180,6 +194,38 @@ const FLOOR = 0.05;
 const MIN_COEFF = Math.min(...ARCHETYPES.map((a) => a.coefficient));
 const RESTING = ARCHETYPES.map((a) => a.coefficient - MIN_COEFF + 0.06);
 
+const SHARED_EMOTION_IDS = new Set<string>(SHARED_EMOTIONS);
+
+export interface ExplicitDistribution {
+  scores: EmotionScores;
+  confidence: number;
+  active: boolean;
+}
+
+/**
+ * A categorical source may expose only part of its probability mass after its
+ * richer taxonomy is projected onto the shared five. Keep that missing mass
+ * visible as uncertainty (an even spread over the five), and use confidence
+ * to temper unsupported certainty. Crucially, no active target population is
+ * assigned to visual-only archetypes such as calm, desperate, loving, or
+ * guilty.
+ */
+function explicitDistribution(total: number, explicit: ExplicitDistribution): number[] {
+  const scores = normalizeEmotionScores(explicit.scores);
+  const confidence = clamp01(explicit.confidence);
+  const representedMass = SHARED_EMOTIONS.reduce(
+    (sum, emotion) => sum + scores[emotion] * confidence,
+    0
+  );
+  const unresolvedPerEmotion = Math.max(0, 1 - representedMass) / SHARED_EMOTIONS.length;
+
+  return ARCHETYPES.map((archetype) => {
+    if (!SHARED_EMOTION_IDS.has(archetype.id)) return 0;
+    const emotion = archetype.id as Emotion;
+    return (scores[emotion] * confidence + unresolvedPerEmotion) * total;
+  });
+}
+
 /**
  * Target headcount per emotion. Proportional, so the mix slides continuously
  * as the person changes rather than switching between states.
@@ -188,8 +234,11 @@ export function distribution(
   total: number,
   intensity: number,
   effort: number,
-  movement: number
+  movement: number,
+  explicit?: ExplicitDistribution
 ): number[] {
+  if (explicit?.active) return explicitDistribution(total, explicit);
+
   const weights = ARCHETYPES.map(
     (a, i) => FLOOR + RESTING[i] * (0.35 + a.affinity(intensity, effort, movement))
   );

@@ -1,51 +1,988 @@
-/**
- * App shell. Two panes: what it heard in you (left), what it's feeling back
- * (right). The divider is permeable on purpose — figures should be able to
- * drift across, and the two crowds sync when it attunes to you. That
- * synchronisation is empathy made visible, with no labels anywhere.
- *
- * React owns layout and lifecycle only. The fusion tick and both render loops
- * run outside React entirely.
- */
-
-import { useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CrowdPane } from './crowd/CrowdPane.js';
-import { fuse, startSources, updateAttunement, store } from './state/emotion.js';
-import { pointerSource } from './sources/pointer.js';
+import {
+  SHARED_EMOTIONS,
+  clearDirectEmotion,
+  dominantEmotion,
+  fuse,
+  normalizeEmotionScores,
+  setDirectEmotion,
+  store,
+  updateAttunement,
+  type Emotion,
+  type EmotionScores,
+} from './state/emotion.js';
+import {
+  blobToBase64,
+  converse,
+  type ConversationPhrase,
+  type ConversationRequest,
+  type ConversationResponse,
+} from './sources/api.js';
+import { startDemoSignals, type DemoSignalUpdate } from './sources/demo.js';
+import { startFaceSource, type FaceSourceUpdate } from './sources/face.js';
+import {
+  startProsodySource,
+  type ProsodyHandle,
+  type ProsodySnapshot,
+} from './sources/prosody.js';
+
+type Phase =
+  | 'idle'
+  | 'requesting'
+  | 'ready'
+  | 'listening'
+  | 'transcribing'
+  | 'thinking'
+  | 'awaiting-audio'
+  | 'speaking'
+  | 'holding'
+  | 'complete'
+  | 'error';
+
+type SignalStatus = 'off' | 'waiting' | 'live' | 'no-face' | 'unavailable' | 'demo';
+
+interface SignalView {
+  status: SignalStatus;
+  scores: EmotionScores;
+  confidence: number;
+  dominant: Emotion | null;
+  detail?: string;
+}
+
+interface CrowdView {
+  scores: EmotionScores;
+  confidence: number;
+  dominant: Emotion | null;
+  active: boolean;
+}
+
+interface FaceCaptureAccumulator {
+  active: boolean;
+  frames: number;
+  detectedFrames: number;
+  weight: number;
+  confidence: number;
+  scores: EmotionScores;
+}
+
+const ZERO_SCORES = normalizeEmotionScores({});
+const UNIFORM_SCORES = normalizeEmotionScores(
+  Object.fromEntries(SHARED_EMOTIONS.map((emotion) => [emotion, 0.2]))
+);
+
+const emptyFaceCapture = (active = false): FaceCaptureAccumulator => ({
+  active,
+  frames: 0,
+  detectedFrames: 0,
+  weight: 0,
+  confidence: 0,
+  scores: normalizeEmotionScores({}),
+});
+
+const EMOTION_LABELS: Record<Emotion, string> = {
+  happy: 'Happy',
+  sad: 'Sad',
+  angry: 'Angry',
+  afraid: 'Afraid',
+  surprised: 'Surprised',
+};
+
+const PHASE_COPY: Record<Phase, string> = {
+  idle: 'Your camera and microphone stay off until you begin.',
+  requesting: 'Waiting for camera and microphone permission…',
+  ready: 'Ready. Speak naturally, then stop when your thought is complete.',
+  listening: 'Listening — face and voice energy are moving the left crowd.',
+  transcribing: 'ElevenLabs Scribe and Gemma are processing through the local backend; no intermediate progress is inferred.',
+  thinking: 'Gemma is forming a response and tracing its internal emotion vectors…',
+  'awaiting-audio': 'The response is ready. Press play to hear the expressive voice.',
+  speaking: 'Speaking — the right crowd follows the response phrase by phrase.',
+  holding: 'Holding the final emotional mix for a moment.',
+  complete: 'Response complete. The mirror is ready for another turn.',
+  error: 'The last step could not complete. Nothing has been fabricated.',
+};
+
+const PIPELINE = ['listen', 'transcribe', 'Gemma', 'speak'] as const;
+const MAX_RECORDING_SECONDS = 45;
+
+function phasePosition(phase: Phase): number {
+  if (phase === 'listening') return 0;
+  if (phase === 'transcribing') return 1;
+  if (phase === 'thinking') return 2;
+  if (phase === 'awaiting-audio' || phase === 'speaking') return 3;
+  if (phase === 'holding' || phase === 'complete') return 4;
+  return -1;
+}
+
+function confidenceLabel(value: number): string {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function mediaRecorderMime(): string | undefined {
+  if (typeof MediaRecorder === 'undefined') return undefined;
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/ogg',
+    'audio/mp4;codecs=mp4a.40.2',
+    'audio/mp4',
+  ];
+  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate));
+}
+
+function currentCrowdView(side: 'user' | 'model'): CrowdView {
+  const emotion = store[side].emotion;
+  return {
+    scores: { ...emotion.scores },
+    confidence: emotion.confidence,
+    dominant: emotion.active ? dominantEmotion(emotion.scores) : null,
+    active: emotion.active,
+  };
+}
+
+function faceView(update: FaceSourceUpdate): SignalView {
+  return {
+    status: update.state,
+    scores: update.scores ?? ZERO_SCORES,
+    confidence: update.confidence,
+    dominant: update.dominant,
+    detail: update.detail,
+  };
+}
+
+function prosodyView(snapshot: ProsodySnapshot): SignalView {
+  return {
+    status: snapshot.voiced ? 'live' : 'waiting',
+    scores: snapshot.scores,
+    confidence: snapshot.confidence,
+    dominant: snapshot.voiced ? dominantEmotion(snapshot.scores) : null,
+    detail: snapshot.voiced
+      ? `${Math.round(snapshot.pitchHz ?? 0)} Hz · ${Math.round(snapshot.spectralCentroidHz)} Hz centroid`
+      : 'Waiting for voiced audio.',
+  };
+}
+
+function EmotionBars({ scores, active = true }: { scores: EmotionScores; active?: boolean }) {
+  return (
+    <div className={`emotion-bars${active ? '' : ' is-muted'}`} aria-label="Five-emotion mixture">
+      {SHARED_EMOTIONS.map((emotion) => (
+        <span className={`emotion-meter emotion-meter--${emotion}`} key={emotion}>
+          <i style={{ width: `${Math.round(scores[emotion] * 100)}%` }} />
+          <small>{EMOTION_LABELS[emotion]}</small>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function SignalChip({ label, signal, caveat }: { label: string; signal: SignalView; caveat?: string }) {
+  const status = signal.status === 'live' || signal.status === 'demo'
+    ? `${signal.dominant ? EMOTION_LABELS[signal.dominant] : 'mixed'} · ${confidenceLabel(signal.confidence)}`
+    : signal.status === 'no-face'
+      ? 'no face'
+      : signal.status === 'unavailable'
+        ? 'unavailable'
+        : 'waiting';
+  return (
+    <div className={`signal-chip signal-chip--${signal.status}`} title={signal.detail}>
+      <span className="signal-dot" aria-hidden="true" />
+      <div>
+        <strong>{label}</strong>
+        <span>{status}</span>
+      </div>
+      {caveat ? <small>{caveat}</small> : null}
+    </div>
+  );
+}
+
+function Pipeline({ phase }: { phase: Phase }) {
+  const position = phasePosition(phase);
+  return (
+    <ol className="pipeline" aria-label="Conversation pipeline">
+      {PIPELINE.map((step, index) => (
+        <li
+          key={step}
+          className={index < position ? 'is-done' : index === position ? 'is-active' : ''}
+          aria-current={index === position ? 'step' : undefined}
+        >
+          <span>{index + 1}</span>{step}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function phraseForTime(
+  phrases: ConversationPhrase[],
+  currentTime: number,
+  duration: number
+): number {
+  if (!phrases.length) return -1;
+  let previousStart = -Infinity;
+  const hasTiming = phrases.every((phrase) => {
+    const start = phrase.startSeconds;
+    if (start === null || !Number.isFinite(start) || start < 0 || start < previousStart) return false;
+    previousStart = start;
+    return true;
+  });
+  if (hasTiming) {
+    let candidate = 0;
+    for (let index = 0; index < phrases.length; index += 1) {
+      const start = phrases[index].startSeconds ?? 0;
+      if (start <= currentTime + 0.04) candidate = index;
+      else break;
+    }
+    return candidate;
+  }
+  if (!Number.isFinite(duration) || duration <= 0) return 0;
+  const totalCharacters = phrases.reduce((sum, phrase) => sum + Math.max(1, phrase.text.length), 0);
+  let boundary = 0;
+  const progress = Math.max(0, Math.min(1, currentTime / duration));
+  for (let index = 0; index < phrases.length; index += 1) {
+    boundary += Math.max(1, phrases[index].text.length) / totalCharacters;
+    if (progress <= boundary) return index;
+  }
+  return phrases.length - 1;
+}
 
 export function App() {
-  useEffect(() => {
-    // Add prosody / face / heart-rate adapters here as they land. Each is one
-    // file in src/sources — nothing else needs to change.
-    const stopping = startSources([pointerSource]);
+  const demoRequested = useMemo(
+    () => new URLSearchParams(window.location.search).get('demo') === '1',
+    []
+  );
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const mediaRef = useRef<MediaStream | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef(0);
+  const recordingLimitRef = useRef(0);
+  const faceCaptureRef = useRef<FaceCaptureAccumulator>(emptyFaceCapture());
+  const faceStopRef = useRef<(() => void) | null>(null);
+  const prosodyRef = useRef<ProsodyHandle | null>(null);
+  const demoFaceStopRef = useRef<(() => void) | null>(null);
+  const demoProsodyStopRef = useRef<(() => void) | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
+  const requestIdRef = useRef(0);
+  const latestFaceRef = useRef<SignalView>({
+    status: 'off', scores: ZERO_SCORES, confidence: 0, dominant: null,
+  });
+  const latestProsodyRef = useRef<SignalView>({
+    status: 'off', scores: UNIFORM_SCORES, confidence: 0, dominant: null,
+  });
+  const activePhraseRef = useRef(-1);
 
-    let raf = 0;
-    const tick = () => {
-      raf = requestAnimationFrame(tick);
+  const [phase, setPhase] = useState<Phase>('idle');
+  const [started, setStarted] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [recorderAvailable, setRecorderAvailable] = useState(true);
+  const [permissionNote, setPermissionNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [typedText, setTypedText] = useState('');
+  const [conversation, setConversation] = useState<ConversationResponse | null>(null);
+  const [faceSignal, setFaceSignal] = useState<SignalView>(latestFaceRef.current);
+  const [prosodySignal, setProsodySignal] = useState<SignalView>(latestProsodyRef.current);
+  const [userCrowd, setUserCrowd] = useState<CrowdView>(() => currentCrowdView('user'));
+  const [modelCrowd, setModelCrowd] = useState<CrowdView>(() => currentCrowdView('model'));
+  const [attunement, setAttunement] = useState(0);
+  const [activePhrase, setActivePhrase] = useState(-1);
+  const [needsPlay, setNeedsPlay] = useState(false);
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
+  const [demoFaceActive, setDemoFaceActive] = useState(false);
+  const [demoProsodyActive, setDemoProsodyActive] = useState(false);
+
+  useEffect(() => {
+    let frame = 0;
+    let lastUiUpdate = 0;
+    const tick = (now: number) => {
       fuse();
       updateAttunement();
-
-      // TEMPORARY: the model has no voice yet, so it lags the user with heavy
-      // damping just to give the right pane something to do. Delete once
-      // generation is wired up.
-      const u = store.user.affect;
-      const m = store.model.affect;
-      m.intensity += (u.intensity * 0.7 - m.intensity) * 0.01;
-      m.effort += (u.effort * 0.5 - m.effort) * 0.01;
+      if (now - lastUiUpdate > 140) {
+        lastUiUpdate = now;
+        setUserCrowd(currentCrowdView('user'));
+        setModelCrowd(currentCrowdView('model'));
+        setAttunement(store.attunement);
+      }
+      frame = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, []);
 
-    return () => {
-      cancelAnimationFrame(raf);
-      void stopping.then((stop) => stop());
+  const recordFaceFrame = useCallback((signal: SignalView) => {
+    const capture = faceCaptureRef.current;
+    if (!capture.active) return;
+    capture.frames += 1;
+    if (signal.confidence <= 0) return;
+    capture.detectedFrames += 1;
+    capture.confidence += signal.confidence;
+    capture.weight += signal.confidence;
+    for (const emotion of SHARED_EMOTIONS) {
+      capture.scores[emotion] += signal.scores[emotion] * signal.confidence;
+    }
+  }, []);
+
+  const finishFaceCapture = useCallback((): { scores: EmotionScores; confidence: number } | null => {
+    const capture = faceCaptureRef.current;
+    capture.active = false;
+    if (!capture.detectedFrames || !capture.weight) return null;
+    const average: Partial<EmotionScores> = {};
+    for (const emotion of SHARED_EMOTIONS) {
+      average[emotion] = capture.scores[emotion] / capture.weight;
+    }
+    const coverage = capture.detectedFrames / Math.max(1, capture.frames);
+    return {
+      scores: normalizeEmotionScores(average),
+      confidence: Math.min(
+        1,
+        (capture.confidence / capture.detectedFrames) * Math.sqrt(coverage)
+      ),
     };
   }, []);
 
+  const updateDemoSignal = useCallback((update: DemoSignalUpdate, source: 'face' | 'prosody') => {
+    if (source === 'face') {
+      const signal: SignalView = {
+        status: 'demo',
+        scores: update.face,
+        confidence: update.faceConfidence,
+        dominant: dominantEmotion(update.face),
+        detail: 'Deterministic opt-in rehearsal signal; not a camera inference.',
+      };
+      recordFaceFrame(signal);
+      latestFaceRef.current = signal;
+      setFaceSignal(signal);
+    } else {
+      const signal: SignalView = {
+        status: 'demo',
+        scores: update.prosody,
+        confidence: update.prosodyConfidence,
+        dominant: dominantEmotion(update.prosody),
+        detail: 'Deterministic opt-in rehearsal signal; not microphone analysis.',
+      };
+      latestProsodyRef.current = signal;
+      setProsodySignal(signal);
+    }
+  }, [recordFaceFrame]);
+
+  const startDemoFace = useCallback(() => {
+    if (!demoRequested || demoFaceStopRef.current) return;
+    demoFaceStopRef.current = startDemoSignals(
+      (update) => updateDemoSignal(update, 'face'),
+      { face: true, prosody: false }
+    );
+    setDemoFaceActive(true);
+  }, [demoRequested, updateDemoSignal]);
+
+  const startDemoProsody = useCallback(() => {
+    if (!demoRequested || demoProsodyStopRef.current) return;
+    demoProsodyStopRef.current = startDemoSignals(
+      (update) => updateDemoSignal(update, 'prosody'),
+      { face: false, prosody: true }
+    );
+    setDemoProsodyActive(true);
+  }, [demoRequested, updateDemoSignal]);
+
+  const onFaceUpdate = useCallback((update: FaceSourceUpdate) => {
+    if (update.state !== 'unavailable' && demoFaceStopRef.current) {
+      demoFaceStopRef.current();
+      demoFaceStopRef.current = null;
+      setDemoFaceActive(false);
+    }
+    if (update.state === 'unavailable' && demoRequested) {
+      startDemoFace();
+      return;
+    }
+    const signal = faceView(update);
+    recordFaceFrame(signal);
+    latestFaceRef.current = signal;
+    setFaceSignal(signal);
+  }, [demoRequested, recordFaceFrame, startDemoFace]);
+
+  const onProsodyUpdate = useCallback((snapshot: ProsodySnapshot) => {
+    const signal = prosodyView(snapshot);
+    latestProsodyRef.current = signal;
+    setProsodySignal(signal);
+  }, []);
+
+  const startExperience = useCallback(async () => {
+    setPhase('requesting');
+    setError(null);
+    setPermissionNote(null);
+    let acquiredStream: MediaStream | null = null;
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser has no media capture support.');
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'user',
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+      });
+      acquiredStream = stream;
+      mediaRef.current = stream;
+      const video = videoRef.current;
+      if (video) {
+        video.srcObject = stream;
+        await video.play();
+        faceStopRef.current = startFaceSource({ video, onUpdate: onFaceUpdate });
+      }
+      try {
+        prosodyRef.current = await startProsodySource(stream, onProsodyUpdate);
+      } catch (prosodyError) {
+        const message = prosodyError instanceof Error ? prosodyError.message : 'Prosody analysis is unavailable.';
+        const unavailable: SignalView = {
+          status: 'unavailable', scores: UNIFORM_SCORES, confidence: 0, dominant: null, detail: message,
+        };
+        latestProsodyRef.current = unavailable;
+        setProsodySignal(unavailable);
+        startDemoProsody();
+      }
+      setRecorderAvailable(typeof MediaRecorder !== 'undefined' && stream.getAudioTracks().length > 0);
+      setStarted(true);
+      setPhase('ready');
+    } catch (mediaError) {
+      faceStopRef.current?.();
+      faceStopRef.current = null;
+      prosodyRef.current?.stop();
+      prosodyRef.current = null;
+      acquiredStream?.getTracks().forEach((track) => track.stop());
+      if (mediaRef.current === acquiredStream) mediaRef.current = null;
+      if (videoRef.current) videoRef.current.srcObject = null;
+      const message = mediaError instanceof Error ? mediaError.message : 'Camera and microphone permission failed.';
+      setPermissionNote(message);
+      setStarted(true);
+      setRecorderAvailable(false);
+      const unavailable: SignalView = {
+        status: 'unavailable', scores: ZERO_SCORES, confidence: 0, dominant: null, detail: message,
+      };
+      latestFaceRef.current = unavailable;
+      latestProsodyRef.current = { ...unavailable, scores: UNIFORM_SCORES };
+      setFaceSignal(unavailable);
+      setProsodySignal({ ...unavailable, scores: UNIFORM_SCORES });
+      if (demoRequested) {
+        startDemoFace();
+        startDemoProsody();
+        setPhase('ready');
+      } else {
+        setPhase('error');
+      }
+    }
+  }, [demoRequested, onFaceUpdate, onProsodyUpdate, startDemoFace, startDemoProsody]);
+
+  const continueTyped = useCallback(() => {
+    setStarted(true);
+    setRecorderAvailable(false);
+    setPermissionNote('Camera and microphone were not started. Typed text remains available.');
+    setPhase('ready');
+    if (demoRequested) {
+      startDemoFace();
+      startDemoProsody();
+    }
+  }, [demoRequested, startDemoFace, startDemoProsody]);
+
+  const signalsForRequest = useCallback((
+    payload: ConversationRequest,
+    prosodyOverride?: { scores: EmotionScores; confidence: number },
+    faceOverride?: { scores: EmotionScores; confidence: number } | null
+  ): ConversationRequest => {
+    // `undefined` means a typed turn may use the current live frame. An
+    // explicit `null` means a recorded take contained no detected face and
+    // must not fall back to a stale pre-recording frame.
+    const face = faceOverride === undefined ? latestFaceRef.current : faceOverride;
+    const prosody = prosodyOverride ?? latestProsodyRef.current;
+    if (face && face.confidence > 0) {
+      payload.face_scores = face.scores;
+      payload.face_confidence = face.confidence;
+    }
+    if (prosody.confidence > 0) {
+      payload.prosody_scores = prosody.scores;
+      payload.prosody_confidence = prosody.confidence;
+    }
+    return payload;
+  }, []);
+
+  const submitConversation = useCallback(async (
+    payload: ConversationRequest,
+    startsWithTranscription: boolean
+  ) => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const requestId = ++requestIdRef.current;
+    const oldAudio = audioRef.current;
+    if (oldAudio) {
+      oldAudio.pause();
+      try {
+        oldAudio.currentTime = 0;
+      } catch {
+        // A stream without seek metadata can still be safely paused.
+      }
+    }
+    clearDirectEmotion('user');
+    clearDirectEmotion('model');
+    activePhraseRef.current = -1;
+    setActivePhrase(-1);
+    setConversation(null);
+    setNeedsPlay(false);
+    setVoiceNotice(null);
+    setError(null);
+    setPhase(startsWithTranscription ? 'transcribing' : 'thinking');
+    try {
+      const result = await converse(payload, controller.signal);
+      if (requestIdRef.current !== requestId) return;
+      // The backend result is already the authoritative fusion of language,
+      // face and utterance-averaged prosody. Keep it direct so raw modalities
+      // are not counted a second time.
+      setDirectEmotion('user', result.human.scores, result.human.confidence);
+      setConversation(result);
+      if (result.speechId) {
+        setPhase('speaking');
+      } else {
+        setVoiceNotice('Expressive voice is unavailable; the returned emotion trace is still shown.');
+        const finalPhrase = result.phrases.at(-1);
+        if (finalPhrase?.emotion) {
+          setDirectEmotion('model', finalPhrase.scores, Math.max(0.2, finalPhrase.intensity));
+        }
+        else clearDirectEmotion('model');
+        setPhase('complete');
+      }
+    } catch (requestError) {
+      if (controller.signal.aborted) return;
+      const message = requestError instanceof Error ? requestError.message : 'Conversation request failed.';
+      setError(message);
+      setPhase('error');
+    } finally {
+      if (requestRef.current === controller) requestRef.current = null;
+    }
+  }, []);
+
+  const submitRecording = useCallback(async (
+    blob: Blob,
+    average: { scores: EmotionScores; confidence: number },
+    faceAverage: { scores: EmotionScores; confidence: number } | null
+  ) => {
+    try {
+      const audioBase64 = await blobToBase64(blob);
+      const payload = signalsForRequest({
+        audio_base64: audioBase64,
+        audio_content_type: blob.type || 'audio/webm',
+      }, average, faceAverage);
+      await submitConversation(payload, true);
+    } catch (recordingError) {
+      const message = recordingError instanceof Error ? recordingError.message : 'Recorded audio could not be sent.';
+      setError(message);
+      setPhase('error');
+    }
+  }, [signalsForRequest, submitConversation]);
+
+  const startRecording = useCallback(() => {
+    const stream = mediaRef.current;
+    if (!stream || !stream.getAudioTracks().length || typeof MediaRecorder === 'undefined') {
+      setError('Live recording is unavailable. Use the typed fallback below.');
+      setPhase('error');
+      return;
+    }
+    const mimeType = mediaRecorderMime();
+    clearDirectEmotion('user');
+    clearDirectEmotion('model');
+    activePhraseRef.current = -1;
+    setActivePhrase(-1);
+    const audioOnly = new MediaStream(stream.getAudioTracks());
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(audioOnly, mimeType ? { mimeType } : undefined);
+    } catch (recorderError) {
+      const message = recorderError instanceof Error ? recorderError.message : 'The browser could not initialize audio recording.';
+      setError(message);
+      setPhase('error');
+      return;
+    }
+    recorderRef.current = recorder;
+    recordingChunksRef.current = [];
+    recorder.ondataavailable = (event) => {
+      if (event.data.size) recordingChunksRef.current.push(event.data);
+    };
+    recorder.onerror = () => {
+      window.clearInterval(recordingTimerRef.current);
+      window.clearTimeout(recordingLimitRef.current);
+      prosodyRef.current?.endCapture();
+      faceCaptureRef.current.active = false;
+      recorder.onstop = null;
+      recorderRef.current = null;
+      setRecording(false);
+      setError('The browser could not record this utterance.');
+      setPhase('error');
+    };
+    recorder.onstop = () => {
+      window.clearInterval(recordingTimerRef.current);
+      window.clearTimeout(recordingLimitRef.current);
+      setRecording(false);
+      const average = prosodyRef.current?.endCapture() ?? {
+        scores: latestProsodyRef.current.scores,
+        confidence: latestProsodyRef.current.confidence,
+      };
+      const faceAverage = finishFaceCapture();
+      const blob = new Blob(recordingChunksRef.current, {
+        type: recorder.mimeType || mimeType || 'audio/webm',
+      });
+      recordingChunksRef.current = [];
+      recorderRef.current = null;
+      if (!blob.size) {
+        setError('No microphone audio was captured.');
+        setPhase('error');
+        return;
+      }
+      setPhase('transcribing');
+      void submitRecording(blob, average, faceAverage);
+    };
+    try {
+      faceCaptureRef.current = emptyFaceCapture(true);
+      prosodyRef.current?.beginCapture();
+      recorder.start(200);
+    } catch (recordingError) {
+      prosodyRef.current?.endCapture();
+      faceCaptureRef.current.active = false;
+      recorderRef.current = null;
+      const message = recordingError instanceof Error
+        ? recordingError.message
+        : 'The browser could not start audio recording.';
+      setError(message);
+      setPhase('error');
+      return;
+    }
+    const startedAt = performance.now();
+    setRecordingSeconds(0);
+    recordingTimerRef.current = window.setInterval(() => {
+      setRecordingSeconds(Math.min(MAX_RECORDING_SECONDS, Math.floor((performance.now() - startedAt) / 1000)));
+    }, 250);
+    recordingLimitRef.current = window.setTimeout(() => {
+      if (recorder.state === 'recording') recorder.stop();
+    }, MAX_RECORDING_SECONDS * 1000);
+    setConversation(null);
+    setVoiceNotice(null);
+    setError(null);
+    setRecording(true);
+    setPhase('listening');
+  }, [finishFaceCapture, submitRecording]);
+
+  const stopRecording = useCallback(() => {
+    const recorder = recorderRef.current;
+    if (recorder?.state === 'recording') recorder.stop();
+  }, []);
+
+  const submitTyped = useCallback(() => {
+    if (
+      recording || phase === 'requesting' || phase === 'transcribing' || phase === 'thinking' ||
+      phase === 'speaking' || phase === 'holding' || phase === 'awaiting-audio'
+    ) return;
+    const transcript = typedText.trim();
+    if (!transcript) return;
+    setTypedText('');
+    void submitConversation(signalsForRequest({ transcript }), false);
+  }, [phase, recording, signalsForRequest, submitConversation, typedText]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !conversation?.speechId) return;
+    let animationFrame = 0;
+    let holdTimer = 0;
+    const sync = () => {
+      const index = phraseForTime(conversation.phrases, audio.currentTime, audio.duration);
+      if (index >= 0 && index !== activePhraseRef.current) {
+        activePhraseRef.current = index;
+        setActivePhrase(index);
+        const phrase = conversation.phrases[index];
+        if (phrase.emotion) {
+          setDirectEmotion('model', phrase.scores, Math.max(0.2, phrase.intensity));
+        } else {
+          clearDirectEmotion('model');
+        }
+      }
+      if (!audio.paused && !audio.ended) animationFrame = requestAnimationFrame(sync);
+    };
+    const onPlay = () => {
+      setNeedsPlay(false);
+      setPhase('speaking');
+      cancelAnimationFrame(animationFrame);
+      animationFrame = requestAnimationFrame(sync);
+    };
+    const onPause = () => {
+      cancelAnimationFrame(animationFrame);
+      if (!audio.ended) setPhase('awaiting-audio');
+    };
+    const onEnded = () => {
+      cancelAnimationFrame(animationFrame);
+      setPhase('holding');
+      holdTimer = window.setTimeout(() => {
+        clearDirectEmotion('model');
+        setPhase('complete');
+      }, 2200);
+    };
+    const onError = () => {
+      const finalPhrase = conversation.phrases.at(-1);
+      const hasMeasuredEmotion = Boolean(finalPhrase?.emotion);
+      if (finalPhrase?.emotion) {
+        setDirectEmotion(
+          'model',
+          finalPhrase.scores,
+          Math.max(0.2, finalPhrase.intensity)
+        );
+        activePhraseRef.current = conversation.phrases.length - 1;
+        setActivePhrase(conversation.phrases.length - 1);
+      } else {
+        clearDirectEmotion('model');
+      }
+      setVoiceNotice(
+        hasMeasuredEmotion
+          ? 'The MP3 could not be loaded. The response and measured phrase emotion remain visible.'
+          : 'The MP3 could not be loaded. The response remains visible; no shared phrase emotion met the evidence threshold.'
+      );
+      setPhase('complete');
+    };
+    audio.addEventListener('play', onPlay);
+    audio.addEventListener('pause', onPause);
+    audio.addEventListener('ended', onEnded);
+    audio.addEventListener('error', onError);
+    audio.src = `/api/audio/${encodeURIComponent(conversation.speechId)}`;
+    audio.load();
+    void audio.play().catch(() => {
+      setNeedsPlay(true);
+      setPhase('awaiting-audio');
+    });
+    return () => {
+      cancelAnimationFrame(animationFrame);
+      window.clearTimeout(holdTimer);
+      audio.removeEventListener('play', onPlay);
+      audio.removeEventListener('pause', onPause);
+      audio.removeEventListener('ended', onEnded);
+      audio.removeEventListener('error', onError);
+    };
+  }, [conversation]);
+
+  const playResponse = useCallback(() => {
+    void audioRef.current?.play().catch(() => setVoiceNotice('Browser playback is still blocked. Use the audio controls.'));
+  }, []);
+
+  useEffect(() => () => {
+    requestIdRef.current += 1;
+    window.clearInterval(recordingTimerRef.current);
+    window.clearTimeout(recordingLimitRef.current);
+    requestRef.current?.abort();
+    faceCaptureRef.current.active = false;
+    faceStopRef.current?.();
+    prosodyRef.current?.stop();
+    demoFaceStopRef.current?.();
+    demoProsodyStopRef.current?.();
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.onstop = null;
+      recorder.stop();
+    }
+    mediaRef.current?.getTracks().forEach((track) => track.stop());
+    clearDirectEmotion('user');
+    clearDirectEmotion('model');
+  }, []);
+
+  const busy = phase === 'transcribing' || phase === 'thinking' || phase === 'requesting';
+  const textLocked = busy || recording || phase === 'speaking' || phase === 'holding' || phase === 'awaiting-audio';
+  const modelPhrase = activePhrase >= 0 ? conversation?.phrases[activePhrase] : null;
+  const languageModality = conversation?.human.modalities.language;
+  const languageSignal: SignalView | null = languageModality?.scores && languageModality.confidence !== undefined
+    ? {
+        status: languageModality.available === false ? 'unavailable' : 'live',
+        scores: languageModality.scores,
+        confidence: languageModality.confidence,
+        dominant: languageModality.available === false ? null : dominantEmotion(languageModality.scores),
+        detail: (conversation?.timings.transcription_seconds ?? 0) > 0
+          ? 'Emotion evidence inferred by Gemma from the ElevenLabs Scribe transcript.'
+          : 'Emotion evidence inferred by Gemma from the typed words.',
+      }
+    : null;
+  const demoActive = demoFaceActive || demoProsodyActive;
+  const displayedAttunement = userCrowd.active && modelCrowd.active ? attunement : 0;
+  const phaseCopy = phase === 'ready' && !recorderAvailable
+    ? 'Ready. Use the typed fallback below to begin.'
+    : PHASE_COPY[phase];
+
   return (
-    <main className="app">
-      <CrowdPane side="user" label="you" />
-      <div className="divider" />
-      <CrowdPane side="model" label="it" />
+    <main className="app-shell">
+      <header className="topbar">
+        <a className="brand" href="/" aria-label="Emotion Mirror home">
+          <span aria-hidden="true">◌</span>
+          <div><strong>EMOTION MIRROR</strong><small>multimodal attunement</small></div>
+        </a>
+        <Pipeline phase={phase} />
+        <div className="topbar-badges">
+          <span className="local-badge">LOCAL CAMERA PIPELINE</span>
+          {demoRequested ? (
+            <span className={`demo-badge${demoActive ? ' is-active' : ''}`}>
+              DEMO SIGNAL {demoActive ? 'ACTIVE' : 'OPT-IN'}
+            </span>
+          ) : null}
+        </div>
+      </header>
+
+      <p className="live-status" role="status" aria-live="polite">
+        <span className={`phase-light phase-light--${phase}`} aria-hidden="true" />
+        {phaseCopy}
+      </p>
+
+      <section className="mirror-stage">
+        <CrowdPane
+          side="user"
+          label="01 · human signal"
+          title="What the system can sense in you"
+          emotion={userCrowd.dominant}
+          confidence={userCrowd.confidence}
+        >
+          <div className="camera-card">
+            <video ref={videoRef} muted playsInline aria-label="Mirrored live camera preview" />
+            {!mediaRef.current ? (
+              <div className="camera-empty">
+                <span aria-hidden="true">◎</span>
+                <p>{permissionNote ?? 'Camera preview begins only with your permission.'}</p>
+              </div>
+            ) : null}
+            <span className={`camera-state camera-state--${faceSignal.status}`}>
+              {faceSignal.status === 'live' ? 'FACE LIVE' : faceSignal.status === 'demo' ? 'DEMO FACE' : faceSignal.status.replace('-', ' ')}
+            </span>
+          </div>
+          <div className="signal-stack">
+            <SignalChip label="Face model" signal={faceSignal} />
+            <SignalChip label="Voice energy" signal={prosodySignal} caveat="prosody heuristic" />
+            {languageSignal ? <SignalChip label="Words · Gemma" signal={languageSignal} caveat="transcript language" /> : null}
+          </div>
+          <EmotionBars scores={userCrowd.scores} active={userCrowd.active} />
+        </CrowdPane>
+
+        <div className="mirror-axis" aria-hidden="true">
+          <span style={{ height: `${Math.round(displayedAttunement * 100)}%` }} />
+        </div>
+
+        <div className="conversation-control">
+          <span className="attunement-readout">ATTUNEMENT {Math.round(displayedAttunement * 100)}%</span>
+          <button
+            type="button"
+            className={`talk-button${recording ? ' is-recording' : ''}`}
+            onClick={recording ? stopRecording : startRecording}
+            disabled={!recorderAvailable || busy || phase === 'awaiting-audio' || phase === 'speaking' || phase === 'holding'}
+            aria-pressed={recording}
+          >
+            <span className="talk-icon" aria-hidden="true">{recording ? '■' : '●'}</span>
+            <strong>{recording ? 'Stop & understand' : 'Speak to the mirror'}</strong>
+            <small>
+              {recording
+                ? `${recordingSeconds}s / ${MAX_RECORDING_SECONDS}s · auto-sends at limit`
+                : recorderAvailable ? 'tap to record · 45s maximum' : 'microphone unavailable'}
+            </small>
+          </button>
+        </div>
+
+        <CrowdPane
+          side="model"
+          label="02 · model response"
+          title="What Gemma is expressing back"
+          emotion={modelCrowd.dominant}
+          confidence={modelCrowd.confidence}
+          metricLabel="vector evidence"
+        >
+          <div className={`response-card${conversation ? ' has-response' : ''}`}>
+            <span>GEMMA · LAYER 28</span>
+            <blockquote>
+              {modelPhrase?.text ?? conversation?.response ?? 'The response will appear here, then move through the crowd phrase by phrase.'}
+            </blockquote>
+            {modelPhrase ? (
+              <small>{modelPhrase.direction || (modelPhrase.emotion ? `${modelPhrase.emotion} delivery` : 'no strong emotion direction')}</small>
+            ) : null}
+          </div>
+          <EmotionBars scores={modelCrowd.scores} active={modelCrowd.active} />
+        </CrowdPane>
+      </section>
+
+      <section className="conversation-dock" aria-label="Conversation transcript and controls">
+        <div className="transcript-panel">
+          <span className="dock-label">YOU SAID</span>
+          <p>{conversation?.transcript ?? 'Your transcript will stay visible here.'}</p>
+        </div>
+        <form
+          className="typed-fallback"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitTyped();
+          }}
+        >
+          <label htmlFor="typed-message">Typed fallback</label>
+          <div>
+            <input
+              id="typed-message"
+              value={typedText}
+              onChange={(event) => setTypedText(event.target.value)}
+              placeholder="Type what you want Gemma to respond to…"
+              disabled={textLocked}
+            />
+            <button type="submit" disabled={!typedText.trim() || textLocked}>Send</button>
+          </div>
+        </form>
+        <div className="reply-panel">
+          <span className="dock-label">IT REPLIED</span>
+          <p>{conversation?.response ?? 'Gemma’s response and expressive voice will appear here.'}</p>
+          <audio ref={audioRef} controls preload="none" aria-label="Gemma expressive response" />
+          {needsPlay ? <button type="button" className="play-button" onClick={playResponse}>Play expressive reply</button> : null}
+        </div>
+      </section>
+
+      <footer className="legend-row">
+        <div className="emotion-legend" aria-label="Emotion color legend">
+          {SHARED_EMOTIONS.map((emotion) => (
+            <span key={emotion} className={`legend-${emotion}`}><i />{EMOTION_LABELS[emotion]}</span>
+          ))}
+        </div>
+        <p>Color = five-emotion mixture · motion = measured energy · confidence always shown</p>
+      </footer>
+
+      {error || voiceNotice ? (
+        <aside className="notice" role="alert">
+          <strong>{error ? 'Pipeline unavailable' : 'Voice note'}</strong>
+          <span>{error ?? voiceNotice}</span>
+          <button type="button" onClick={() => { setError(null); setVoiceNotice(null); if (phase === 'error') setPhase('ready'); }}>Dismiss</button>
+        </aside>
+      ) : null}
+
+      {!started ? (
+        <section className="consent-gate" role="dialog" aria-modal="true" aria-labelledby="consent-title">
+          <div className="consent-glow" aria-hidden="true" />
+          <div className="consent-card">
+            {demoRequested ? <span className="demo-badge is-active">DEMO SIGNAL OPT-IN</span> : null}
+            <p className="consent-kicker">A TWO-SIDED EMOTION CONVERSATION</p>
+            <h1 id="consent-title">See what the model hears.<br />See what it feels back.</h1>
+            <p className="consent-copy">
+              Your face, voice energy, and words become one transparent signal. Gemma answers;
+              its internal emotion vectors shape both the crowd and ElevenLabs voice.
+            </p>
+            <ul>
+              <li><span>Camera</span><span className="consent-detail">Downscaled JPEG frames go to the local face endpoint about 4–5 times per second.</span></li>
+              <li><span>Microphone</span><span className="consent-detail">Live energy stays in this browser. On stop, recorded audio goes through the local backend to ElevenLabs Scribe.</span></li>
+              <li><span>Honesty</span><span className="consent-detail">Missing services show as unavailable. Demo data runs only with <code>?demo=1</code>.</span></li>
+            </ul>
+            <div className="consent-actions">
+              <button type="button" className="consent-primary" onClick={() => void startExperience()} disabled={phase === 'requesting'}>
+                {phase === 'requesting' ? 'Requesting permission…' : 'Start camera + microphone'}
+              </button>
+              <button type="button" className="consent-secondary" onClick={continueTyped} disabled={phase === 'requesting'}>Continue with typing</button>
+            </div>
+            <small>Nothing starts automatically. You stay in control of recording.</small>
+          </div>
+        </section>
+      ) : null}
     </main>
   );
 }

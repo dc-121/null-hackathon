@@ -1,10 +1,11 @@
 /**
  * The crowd.
  *
- * Nine emotions, each with its own body, gait and behaviour. Affect drives a
- * soft DISTRIBUTION over them — never a classification — so what you read is
- * the shifting mix. Individuals are discrete; the crowd is a gradient. Two
- * feelings at once show up as two populations, which no single label can do.
+ * Nine visual archetypes, each with its own body, gait and behaviour. The idle
+ * simulation uses continuous affect; live classification drives a direct soft
+ * distribution over the shared five. Individuals are discrete; the crowd is
+ * a gradient. Two feelings at once show up as two populations, which no single
+ * label can do.
  *
  * Behaviours are what sell it: angry ones seek others out and swing at them,
  * desperate ones bolt around sweating, happy ones skip, afraid ones scatter.
@@ -329,7 +330,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
     raf = requestAnimationFrame(frame);
 
     tick++;
-    const { affect, emphases } = store[side];
+    const { affect, emphases, emotion } = store[side];
     trimEmphases();
 
     const intensity = Math.max(0, Math.min(1, (affect.intensity + 1) / 3));
@@ -340,9 +341,12 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
 
     // The target mix is eased, not applied directly. Affect can swing quickly
     // and the population should drift after it, not snap.
-    const raw = distribution(want, intensity, effort, movement);
+    const raw = distribution(want, intensity, effort, movement, emotion);
+    // Explicit detections should become legible within a beat. Agent retyping
+    // is already capped below, so a faster target here still cannot pop.
+    const distributionSmoothing = emotion.active ? 0.04 : 0.015;
     for (let t = 0; t < smoothed.length; t++) {
-      smoothed[t] += (raw[t] - smoothed[t]) * 0.015;
+      smoothed[t] += (raw[t] - smoothed[t]) * distributionSmoothing;
     }
     const target = smoothed;
     const counts = new Array(ARCHETYPES.length).fill(0);

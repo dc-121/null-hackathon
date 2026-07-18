@@ -6,16 +6,29 @@
  * frame. Nothing here mirrors emotion into useState.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { startCrowd } from './crowd.js';
-import type { Side } from '../state/emotion.js';
+import type { Emotion, Side } from '../state/emotion.js';
 
 interface CrowdPaneProps {
   side: Side;
   label: string;
+  title: string;
+  emotion: Emotion | null;
+  confidence: number;
+  metricLabel?: string;
+  children?: ReactNode;
 }
 
-export function CrowdPane({ side, label }: CrowdPaneProps) {
+export function CrowdPane({
+  side,
+  label,
+  title,
+  emotion,
+  confidence,
+  metricLabel = 'fused confidence',
+  children,
+}: CrowdPaneProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -32,9 +45,21 @@ export function CrowdPane({ side, label }: CrowdPaneProps) {
   }, [side]);
 
   return (
-    <section className="pane">
+    <section
+      className={`pane pane--${side}`}
+      data-emotion={emotion ?? 'waiting'}
+      aria-label={`${title} emotion crowd`}
+    >
       <canvas ref={canvasRef} className="crowd" />
-      <span className="label">{label}</span>
+      <div className="pane-vignette" aria-hidden="true" />
+      <header className="pane-heading">
+        <span className="pane-kicker">{label}</span>
+        <div>
+          <strong>{emotion ?? 'waiting for signal'}</strong>
+          <span>{emotion ? `${Math.round(confidence * 100)}% ${metricLabel}` : title}</span>
+        </div>
+      </header>
+      <div className="pane-content">{children}</div>
     </section>
   );
 }

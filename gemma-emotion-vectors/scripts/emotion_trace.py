@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from collections.abc import Iterator
 from dataclasses import dataclass
 import getpass
@@ -613,6 +614,76 @@ class SpeechClient:
         ) as response:
             response.raise_for_status()
             yield from response.iter_bytes(chunk_size=4096)
+
+    def transcribe(self, audio: bytes, *, content_type: str) -> dict:
+        """Transcribe one in-memory recording with ElevenLabs Scribe v2."""
+        extension = {
+            "audio/mpeg": "mp3",
+            "audio/mp3": "mp3",
+            "audio/mp4": "m4a",
+            "audio/ogg": "ogg",
+            "audio/wav": "wav",
+            "audio/x-wav": "wav",
+            "audio/webm": "webm",
+            "video/webm": "webm",
+        }.get(content_type, "audio")
+        response = self.http.post(
+            "/v1/speech-to-text",
+            data={
+                "model_id": "scribe_v2",
+                "timestamps_granularity": "word",
+                "tag_audio_events": "true",
+            },
+            files={"file": (f"utterance.{extension}", audio, content_type)},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("Scribe v2 returned an invalid response")
+        transcript = payload.get("text")
+        if not isinstance(transcript, str) or not transcript.strip():
+            raise RuntimeError("Scribe v2 returned an empty transcript")
+        return payload
+
+    def synthesize_with_timestamps(
+        self, text: str
+    ) -> tuple[bytes, dict | None]:
+        """Generate one Eleven v3 MP3 and its original-text alignment."""
+        voice_settings = (
+            {"stability": self.stability}
+            if self.model_id == "eleven_v3"
+            else {
+                "stability": self.stability,
+                "similarity_boost": 0.75,
+                "style": 0.0,
+                "use_speaker_boost": True,
+                "speed": 1.0,
+            }
+        )
+        response = self.http.post(
+            f"/v1/text-to-speech/{self.voice_id}/with-timestamps",
+            params={"output_format": self.output_format},
+            json={
+                "text": text,
+                "model_id": self.model_id,
+                "voice_settings": voice_settings,
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("ElevenLabs returned an invalid response")
+        encoded_audio = payload.get("audio_base64")
+        if not isinstance(encoded_audio, str):
+            raise RuntimeError("ElevenLabs returned no audio")
+        try:
+            audio = base64.b64decode(encoded_audio, validate=True)
+        except ValueError as error:
+            raise RuntimeError("ElevenLabs returned invalid audio") from error
+        if not audio:
+            raise RuntimeError("ElevenLabs returned empty audio")
+        alignment = payload.get("alignment") or payload.get("normalized_alignment")
+        return audio, alignment if isinstance(alignment, dict) else None
 
     def speak(
         self, text: str, *, save_path: Path | None
