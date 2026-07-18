@@ -29,9 +29,9 @@ import { PARTICLES, particleGeometries, type ParticleShape } from './particles.j
 // A smaller cast keeps each person readable and gives the two emotional
 // populations room to breathe. Density should communicate a mixture, not
 // turn the experience into visual noise.
-const CROWD_SIZE = 36;
+const CROWD_SIZE = 96;
 const MAX_AGENTS = CROWD_SIZE;
-const FIGURE_SCALE = 1.42;
+const FIGURE_SCALE = 1.08;
 
 /**
  * Where agents may walk, derived from the camera frustum at resize rather than
@@ -60,7 +60,7 @@ interface Bounds {
 const CURSOR_RADIUS = 6;
 
 /** Bodies are never allowed closer than this. Roughly shoulder to shoulder. */
-const MIN_SEPARATION = 1.95;
+const MIN_SEPARATION = 1.42;
 
 const EMITTER_SHAPES = ['drop', 'puff', 'heart', 'spark'] as const;
 

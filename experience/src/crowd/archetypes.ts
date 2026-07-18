@@ -109,10 +109,10 @@ export const ARCHETYPES: Archetype[] = [
   {
     id: 'surprised',
     coefficient: 0.0338,
-    // Cyan is intentionally distinct from happy's gold so every shared
-    // emotion remains identifiable by colour at crowd scale.
-    hue: 0.52, sat: 0.76, light: 0.61,
-    hairHue: 0.54, hairSat: 0.58, hairLight: 0.38,
+    // Leaf green stays distinct from happy's gold, sad's blue, angry's red,
+    // and afraid's purple even when the crowd is dense.
+    hue: 0.36, sat: 0.78, light: 0.58,
+    hairHue: 0.34, hairSat: 0.64, hairLight: 0.36,
     skin: 0.74, mouth: 0, mouthOpen: 1, brow: 1,
     headScale: 1.24, girth: 0.95, limbLength: 0.98, heightBias: 1.0, hair: 0.85,
     leanBias: -0.22, hunchBias: -0.1, bounceBias: 1.5, speedBias: 1.1,

@@ -12,7 +12,7 @@
   --sad: #4f9eea;
   --angry: #f25f5c;
   --afraid: #a77bf3;
-  --surprised: #2bc7c9;
+  --surprised: #4bdd72;
   --acid: #c9ff57;
   --danger: #ff665f;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -1171,10 +1171,25 @@ button {
 /* Judge proof is a presentation mode: the crowds and causal comparison are
    the product. Remove duplicated transcript/legend chrome and consolidate the
    synthetic input into one compact evidence card. */
+.app-shell.is-proof-mode {
+  grid-template-rows: auto minmax(300px, 1fr) auto;
+}
+
 .app-shell.is-proof-mode .topbar {
-  min-height: 56px;
-  padding-top: 8px;
-  padding-bottom: 8px;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  min-height: 44px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.app-shell.is-proof-mode .brand > span {
+  width: 25px;
+  height: 25px;
+}
+
+.app-shell.is-proof-mode .brand small,
+.app-shell.is-proof-mode .pipeline {
+  display: none;
 }
 
 .app-shell.is-proof-mode .local-badge {
@@ -1182,22 +1197,24 @@ button {
 }
 
 .app-shell.is-proof-mode .live-status {
-  min-height: 27px;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  font-size: 0.57rem;
+  display: none;
 }
 
 .app-shell.is-proof-mode .response-card {
-  top: 62px;
-  max-width: 440px;
-  max-height: calc(100% - 112px);
-  padding: 12px 13px;
+  top: 50px;
+  max-width: 380px;
+  max-height: calc(100% - 88px);
+  padding: 10px 11px;
+  background: rgba(9, 11, 16, 0.82);
+}
+
+.app-shell.is-proof-mode:not(.has-conversation) .response-card {
+  display: none;
 }
 
 .app-shell.is-proof-mode .conversation-dock {
   grid-template-columns: minmax(500px, 1.3fr) minmax(340px, 1fr);
-  min-height: 96px;
+  min-height: 80px;
 }
 
 .app-shell.is-proof-mode:not(.has-conversation) .conversation-dock {
@@ -1215,16 +1232,35 @@ button {
 
 .app-shell.is-proof-mode .typed-fallback,
 .app-shell.is-proof-mode .reply-panel {
-  padding-top: 10px;
-  padding-bottom: 10px;
+  padding-top: 7px;
+  padding-bottom: 7px;
 }
 
 .app-shell.is-proof-mode .typed-fallback {
   border-left: 0;
 }
 
-.app-shell.is-proof-mode .pane--user .emotion-bars {
+.app-shell.is-proof-mode .emotion-bars,
+.app-shell.is-proof-mode .proof-vector-trace,
+.app-shell.is-proof-mode .proof-announcement,
+.app-shell.is-proof-mode .typed-fallback > label {
   display: none;
+}
+
+.app-shell.is-proof-mode .counterfactual-proof {
+  gap: 6px;
+}
+
+.app-shell.is-proof-mode .counterfactual-proof > header span {
+  display: none;
+}
+
+.app-shell.is-proof-mode .counterfactual-proof > header {
+  padding-bottom: 6px;
+}
+
+.app-shell.is-proof-mode .counterfactual-proof > footer {
+  padding: 7px 8px;
 }
 
 .app-shell.is-proof-mode .legend-row {

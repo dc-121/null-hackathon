@@ -89,7 +89,7 @@ export const PARTICLES: Record<string, ParticleSpec> = {
     drift: 0.1,
     size: 0.22,
     grow: 0.5,
-    color: [0.14, 0.9, 0.7],
+    color: [0.36, 0.9, 0.7],
     rate: 0.014,
   },
   afraid: {
