@@ -27,7 +27,11 @@ export interface ParticleSpec {
   /** Multiplied into size as life runs out — puffs grow, drops shrink. */
   grow: number;
   color: [number, number, number];
-  /** Life advanced per frame. Higher = faster cycle. */
+  /**
+   * Life advanced per frame — so this is roughly cycles per second divided by
+   * 60. Keep it slow: emitters are the loudest thing on screen and a fast
+   * cycle reads as flickering rather than as steam or hearts rising.
+   */
   rate: number;
 }
 
@@ -44,7 +48,7 @@ export const PARTICLES: Record<string, ParticleSpec> = {
     size: 0.16,
     grow: 2.6,
     color: [0.02, 0.5, 0.62],
-    rate: 0.028,
+    rate: 0.007,
   },
   sad: {
     // Tears, from the eyes, falling.
@@ -55,7 +59,7 @@ export const PARTICLES: Record<string, ParticleSpec> = {
     size: 0.085,
     grow: 0.85,
     color: [0.55, 0.7, 0.72],
-    rate: 0.022,
+    rate: 0.011,
   },
   loving: {
     // Hearts, rising and swaying.
@@ -65,7 +69,7 @@ export const PARTICLES: Record<string, ParticleSpec> = {
     size: 0.2,
     grow: 1.15,
     color: [0.95, 0.72, 0.66],
-    rate: 0.016,
+    rate: 0.005,
   },
   desperate: {
     // Sweat, flung off sideways.
@@ -75,7 +79,7 @@ export const PARTICLES: Record<string, ParticleSpec> = {
     size: 0.08,
     grow: 0.9,
     color: [0.55, 0.6, 0.8],
-    rate: 0.045,
+    rate: 0.02,
   },
   surprised: {
     // A shock mark that pops out and vanishes.
@@ -85,7 +89,7 @@ export const PARTICLES: Record<string, ParticleSpec> = {
     size: 0.22,
     grow: 0.5,
     color: [0.14, 0.9, 0.7],
-    rate: 0.06,
+    rate: 0.028,
   },
   afraid: {
     // Cold little beads, shaken loose.
@@ -95,7 +99,7 @@ export const PARTICLES: Record<string, ParticleSpec> = {
     size: 0.07,
     grow: 0.7,
     color: [0.58, 0.55, 0.85],
-    rate: 0.05,
+    rate: 0.024,
   },
   guilty: {
     // A small dark cloud that hangs over them.
@@ -105,7 +109,7 @@ export const PARTICLES: Record<string, ParticleSpec> = {
     size: 0.17,
     grow: 1.5,
     color: [0.62, 0.12, 0.26],
-    rate: 0.014,
+    rate: 0.006,
   },
   happy: NONE,
   calm: NONE,
