@@ -1,12 +1,13 @@
 /**
  * Mount point for one side's crowd.
  *
- * React sets up the canvas and then gets out of the way. The render loop owns
- * everything inside it — read `store[side]` directly each frame, never mirror
- * it into useState.
+ * React sets up the canvas and then gets out of the way — the render loop in
+ * crowd.ts owns everything inside it, reading `store[side]` directly each
+ * frame. Nothing here mirrors emotion into useState.
  */
 
 import { useEffect, useRef } from 'react';
+import { startCrowd } from './crowd.js';
 import type { Side } from '../state/emotion.js';
 
 interface CrowdPaneProps {
@@ -29,18 +30,10 @@ export function CrowdPane({ side, label }: CrowdPaneProps) {
     resize();
     window.addEventListener('resize', resize);
 
-    // TODO: startCrowd(canvas, side) — the figures live here.
-    const ctx = canvas.getContext('2d');
-    let raf = 0;
-    const draw = () => {
-      raf = requestAnimationFrame(draw);
-      if (!ctx) return;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    };
-    raf = requestAnimationFrame(draw);
+    const crowd = startCrowd(canvas, side);
 
     return () => {
-      cancelAnimationFrame(raf);
+      crowd.stop();
       window.removeEventListener('resize', resize);
     };
   }, [side]);
