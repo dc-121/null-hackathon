@@ -18,8 +18,15 @@ import { ARCHETYPES, distribution } from './archetypes.js';
 import { pose, CADENCE } from './gait.js';
 import { PARTICLES, particleGeometries, type ParticleShape } from './particles.js';
 
-const MAX_AGENTS = 160;
-const BASE_AGENTS = 26;
+/**
+ * Fixed headcount. Quantity used to scale with intensity, but that means
+ * bodies appear and vanish as the person changes — and because the fill loop
+ * assigns new agents to whoever is furthest below target, they arrive as a
+ * block of one emotion. The mix is expressive enough on its own; the crowd
+ * size shouldn't move.
+ */
+const CROWD_SIZE = 120;
+const MAX_AGENTS = CROWD_SIZE;
 
 /**
  * Where agents may walk, derived from the camera frustum at resize rather than
@@ -199,6 +206,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
   }
 
   const agents: Agent[] = [];
+  const smoothed = distribution(CROWD_SIZE, 0.35, 0.35, 0.2);
   const consumed = new Set<number>();
   const dummy = new THREE.Object3D();
   const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
@@ -309,10 +317,15 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
     const effort = Math.max(0, Math.min(1, (affect.effort + 1) / 3));
     const movement = Math.max(0, Math.min(1, affect.movement / 2));
 
-    // Quantity is itself an encoding: feeling more means more of them.
-    const want = Math.round(BASE_AGENTS + intensity * (MAX_AGENTS - BASE_AGENTS));
+    const want = CROWD_SIZE;
 
-    const target = distribution(want, intensity, effort, movement);
+    // The target mix is eased, not applied directly. Affect can swing quickly
+    // and the population should drift after it, not snap.
+    const raw = distribution(want, intensity, effort, movement);
+    for (let t = 0; t < smoothed.length; t++) {
+      smoothed[t] += (raw[t] - smoothed[t]) * 0.015;
+    }
+    const target = smoothed;
     const counts = new Array(ARCHETYPES.length).fill(0);
     for (const a of agents) counts[a.archetype]++;
 
