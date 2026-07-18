@@ -51,15 +51,16 @@ export const PARTICLES: Record<string, ParticleSpec> = {
     rate: 0.007,
   },
   sad: {
-    // Tears, from the eyes, falling.
+    // Tears, from the eyes. Slow and heavy — they well up and roll rather than
+    // drop, so the fall distance is short and the cycle is long.
     shape: 'drop',
     fromEyes: true,
-    rise: -1.4,
+    rise: -0.55,
     drift: 0.05,
     size: 0.085,
     grow: 0.85,
     color: [0.55, 0.7, 0.72],
-    rate: 0.011,
+    rate: 0.004,
   },
   loving: {
     // Hearts, rising and swaying.
