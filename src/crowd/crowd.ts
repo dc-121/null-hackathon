@@ -183,8 +183,18 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
     legR: new THREE.InstancedMesh(limb(0.09, 0.58), mat, MAX_AGENTS),
     footL: new THREE.InstancedMesh(new THREE.SphereGeometry(0.11, 8, 7), mat, MAX_AGENTS),
     footR: new THREE.InstancedMesh(new THREE.SphereGeometry(0.11, 8, 7), mat, MAX_AGENTS),
-    eyeL: new THREE.InstancedMesh(new THREE.BoxGeometry(0.07, 0.09, 0.05), eyeMat, MAX_AGENTS),
-    eyeR: new THREE.InstancedMesh(new THREE.BoxGeometry(0.07, 0.09, 0.05), eyeMat, MAX_AGENTS),
+    eyeL: new THREE.InstancedMesh(new THREE.BoxGeometry(0.062, 0.075, 0.05), eyeMat, MAX_AGENTS),
+    eyeR: new THREE.InstancedMesh(new THREE.BoxGeometry(0.062, 0.075, 0.05), eyeMat, MAX_AGENTS),
+    browL: new THREE.InstancedMesh(new THREE.BoxGeometry(0.085, 0.022, 0.04), eyeMat, MAX_AGENTS),
+    browR: new THREE.InstancedMesh(new THREE.BoxGeometry(0.085, 0.022, 0.04), eyeMat, MAX_AGENTS),
+    // Half-torus. Flipping it 180 degrees turns a frown into a smile, so one
+    // geometry covers the whole range.
+    mouth: new THREE.InstancedMesh(
+      new THREE.TorusGeometry(0.085, 0.02, 4, 10, Math.PI),
+      eyeMat,
+      MAX_AGENTS
+    ),
+    mouthOpen: new THREE.InstancedMesh(new THREE.SphereGeometry(0.075, 9, 7), eyeMat, MAX_AGENTS),
   };
 
   // One instanced mesh per particle SHAPE, shared across the emotions that use
@@ -198,10 +208,13 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
   };
 
   const meshes = [...Object.values(parts), ...Object.values(emitters)];
-  const skinParts = [
-    parts.head, parts.torso, parts.armL, parts.armR, parts.handL, parts.handR,
-    parts.legL, parts.legR, parts.footL, parts.footR,
-  ];
+  // Clothing comes free from how the existing parts are coloured: the shirt is
+  // the biggest area so it carries the emotion at distance, while skin stays
+  // neutral so they read as people rather than as coloured markers.
+  const shirtParts = [parts.torso, parts.armL, parts.armR];
+  const skinParts = [parts.head, parts.handL, parts.handR];
+  const trouserParts = [parts.legL, parts.legR];
+  const shoeParts = [parts.footL, parts.footR];
   for (const mesh of meshes) {
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.frustumCulled = false;
@@ -213,7 +226,10 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
   const consumed = new Set<number>();
   const dummy = new THREE.Object3D();
   const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
+  const shirt = new THREE.Color();
   const skin = new THREE.Color();
+  const trouser = new THREE.Color();
+  const shoe = new THREE.Color(0x1b1b22);
   const hairColor = new THREE.Color();
   const shade = new THREE.Color();
 
@@ -639,7 +655,10 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
       const cy = Math.cos(yaw);
       const sy = Math.sin(yaw);
 
-      skin.setHSL(arch.hue, arch.sat, arch.light);
+      shirt.setHSL(arch.hue, arch.sat, arch.light);
+      // One skin hue across the crowd, varying only in lightness.
+      skin.setHSL(0.07, 0.32, arch.skin);
+      trouser.setHSL(arch.hue, arch.sat * 0.45, arch.light * 0.42);
       hairColor.setHSL(arch.hairHue, arch.hairSat, arch.hairLight);
 
       // legs + feet
@@ -729,7 +748,8 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
       parts.hair.setColorAt(i, hairColor);
 
       // eyes — small, but they do an enormous amount for character
-      const eyeR = 0.24 * h * arch.headScale;
+      const faceZ = 0.24 * h * arch.headScale;
+      const eyeR = faceZ;
       for (const [mesh, dir] of [
         [parts.eyeL, -1],
         [parts.eyeR, 1],
@@ -743,6 +763,53 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
         dummy.scale.setScalar(h * arch.headScale);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
+      }
+
+      // brows — angled down is anger, inner-raised is worry. Tiny geometry,
+      // and the single most expressive thing on the whole figure.
+      // Kept clear of the eyes — any closer and the two merge into a single
+      // black bar once the figure is more than a few metres away.
+      const browY = headY + 0.145 * h * arch.headScale;
+      for (const [mesh, dir] of [
+        [parts.browL, -1],
+        [parts.browR, 1],
+      ] as const) {
+        dummy.position.set(
+          headX + sy * faceZ + cy * dir * 0.1 * h * arch.headScale,
+          browY,
+          headZ + cy * faceZ - sy * dir * 0.1 * h * arch.headScale
+        );
+        dummy.rotation.set(0, yaw, dir * arch.brow * 0.5);
+        dummy.scale.setScalar(h * arch.headScale);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      }
+
+      // mouth — the half-torus flips to turn a frown into a smile, and
+      // flattens toward a line as it approaches neutral.
+      const mouthY = headY - 0.1 * h * arch.headScale;
+      dummy.position.set(headX + sy * faceZ, mouthY, headZ + cy * faceZ);
+      dummy.rotation.set(0, yaw, arch.mouth > 0 ? Math.PI : 0);
+      dummy.scale.set(
+        h * arch.headScale,
+        h * arch.headScale * (0.25 + Math.abs(arch.mouth) * 0.75),
+        h * arch.headScale
+      );
+      dummy.updateMatrix();
+      parts.mouth.setMatrixAt(i, dummy.matrix);
+
+      if (arch.mouthOpen > 0.01) {
+        dummy.position.set(headX + sy * faceZ, mouthY - 0.02 * h, headZ + cy * faceZ);
+        dummy.rotation.set(0, yaw, 0);
+        dummy.scale.set(
+          h * arch.headScale * (0.6 + arch.mouthOpen * 0.5),
+          h * arch.headScale * arch.mouthOpen,
+          h * arch.headScale * 0.5
+        );
+        dummy.updateMatrix();
+        parts.mouthOpen.setMatrixAt(i, dummy.matrix);
+      } else {
+        parts.mouthOpen.setMatrixAt(i, hidden);
       }
 
       // emitted particle — steam, tears, hearts, sweat, shock marks
@@ -772,10 +839,10 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
         emitters[shape].setColorAt(i, shade);
       }
 
-      for (const mesh of skinParts) {
-        shade.copy(skin).multiplyScalar(mesh === parts.head ? 1.1 : 1);
-        mesh.setColorAt(i, shade);
-      }
+      for (const mesh of shirtParts) mesh.setColorAt(i, shirt);
+      for (const mesh of skinParts) mesh.setColorAt(i, skin);
+      for (const mesh of trouserParts) mesh.setColorAt(i, trouser);
+      for (const mesh of shoeParts) mesh.setColorAt(i, shoe);
     }
 
     // Positional de-overlap. The separation force steers them apart smoothly,
