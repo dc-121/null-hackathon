@@ -22,19 +22,12 @@ export function CrowdPane({ side, label }: CrowdPaneProps) {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const resize = () => {
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = canvas.clientWidth * dpr;
-      canvas.height = canvas.clientHeight * dpr;
-    };
-    resize();
-    window.addEventListener('resize', resize);
-
     const crowd = startCrowd(canvas, side);
+    window.addEventListener('resize', crowd.resize);
 
     return () => {
+      window.removeEventListener('resize', crowd.resize);
       crowd.stop();
-      window.removeEventListener('resize', resize);
     };
   }, [side]);
 
