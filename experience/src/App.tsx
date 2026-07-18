@@ -1199,7 +1199,7 @@ export function App() {
         : PHASE_COPY[phase];
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell${judgeProofActive ? ' is-proof-mode' : ''}${conversation ? ' has-conversation' : ''}`}>
       <header className="topbar">
         <a className="brand" href="/" aria-label="Null Mirror home">
           <span aria-hidden="true">◌</span>
@@ -1237,23 +1237,46 @@ export function App() {
           emotion={userCrowd.dominant}
           confidence={userCrowd.confidence}
         >
-          <div className="camera-card">
-            <video ref={videoRef} muted playsInline aria-label="Mirrored live camera preview" />
-            {!mediaRef.current ? (
-              <div className="camera-empty">
-                <span aria-hidden="true">◎</span>
-                <p>{permissionNote ?? 'Camera preview begins only with your permission.'}</p>
+          {judgeProofActive ? (
+            <aside className={`proof-signal-card proof-signal-card--${demoEmotion}`}>
+              <header>
+                <span>{proofStage === 'baseline' ? 'CONTROL INPUT' : 'ADAPTED INPUT'}</span>
+                <strong>
+                  {proofStage === 'baseline'
+                    ? 'Nonverbal context withheld'
+                    : `${EMOTION_LABELS[demoEmotion]} face + voice`}
+                </strong>
+              </header>
+              <SignalChip label="Face model" signal={faceSignal} />
+              <SignalChip label="Voice energy" signal={prosodySignal} caveat="prosody heuristic" />
+              {languageSignal ? <SignalChip label="Words · Gemma" signal={languageSignal} caveat="transcript language" /> : null}
+              <small>
+                {proofStage === 'baseline'
+                  ? 'Same words. These two signals are not sent to Gemma.'
+                  : 'Labeled rehearsal signals. No camera or microphone is used.'}
+              </small>
+            </aside>
+          ) : (
+            <>
+              <div className="camera-card">
+                <video ref={videoRef} muted playsInline aria-label="Mirrored live camera preview" />
+                {!mediaRef.current ? (
+                  <div className="camera-empty">
+                    <span aria-hidden="true">◎</span>
+                    <p>{permissionNote ?? 'Camera preview begins only with your permission.'}</p>
+                  </div>
+                ) : null}
+                <span className={`camera-state camera-state--${faceSignal.status}`}>
+                  {faceSignal.status === 'live' ? 'FACE LIVE' : faceSignal.status === 'demo' ? 'DEMO FACE' : faceSignal.status.replace('-', ' ')}
+                </span>
               </div>
-            ) : null}
-            <span className={`camera-state camera-state--${faceSignal.status}`}>
-              {faceSignal.status === 'live' ? 'FACE LIVE' : faceSignal.status === 'demo' ? 'DEMO FACE' : faceSignal.status.replace('-', ' ')}
-            </span>
-          </div>
-          <div className="signal-stack">
-            <SignalChip label="Face model" signal={faceSignal} />
-            <SignalChip label="Voice energy" signal={prosodySignal} caveat="prosody heuristic" />
-            {languageSignal ? <SignalChip label="Words · Gemma" signal={languageSignal} caveat="transcript language" /> : null}
-          </div>
+              <div className="signal-stack">
+                <SignalChip label="Face model" signal={faceSignal} />
+                <SignalChip label="Voice energy" signal={prosodySignal} caveat="prosody heuristic" />
+                {languageSignal ? <SignalChip label="Words · Gemma" signal={languageSignal} caveat="transcript language" /> : null}
+              </div>
+            </>
+          )}
           <EmotionBars scores={userCrowd.scores} active={userCrowd.active} />
         </CrowdPane>
 
@@ -1261,24 +1284,30 @@ export function App() {
           <span style={{ height: `${Math.round(contextAxisValue * 100)}%` }} />
         </div>
 
-        <div className="conversation-control">
-          <span className="context-impact-readout">{contextAxisCopy}</span>
-          <button
-            type="button"
-            className={`talk-button${recording ? ' is-recording' : ''}`}
-            onClick={recording ? stopRecording : startRecording}
-            disabled={!recorderAvailable || busy || phase === 'awaiting-audio' || phase === 'speaking' || phase === 'holding'}
-            aria-pressed={recording}
-          >
-            <span className="talk-icon" aria-hidden="true">{recording ? '■' : '●'}</span>
-            <strong>{recording ? 'Stop & respond' : 'Speak to the mirror'}</strong>
-            <small>
-              {recording
-                ? `${recordingSeconds}s / ${MAX_RECORDING_SECONDS}s · auto-sends at limit`
-                : recorderAvailable ? 'tap to record · 45s maximum' : 'microphone unavailable'}
-            </small>
-          </button>
-        </div>
+        {judgeProofActive ? (
+          <div className="proof-axis-callout">
+            <span>{contextAxisCopy}</span>
+          </div>
+        ) : (
+          <div className="conversation-control">
+            <span className="context-impact-readout">{contextAxisCopy}</span>
+            <button
+              type="button"
+              className={`talk-button${recording ? ' is-recording' : ''}`}
+              onClick={recording ? stopRecording : startRecording}
+              disabled={!recorderAvailable || busy || phase === 'awaiting-audio' || phase === 'speaking' || phase === 'holding'}
+              aria-pressed={recording}
+            >
+              <span className="talk-icon" aria-hidden="true">{recording ? '■' : '●'}</span>
+              <strong>{recording ? 'Stop & respond' : 'Speak to the mirror'}</strong>
+              <small>
+                {recording
+                  ? `${recordingSeconds}s / ${MAX_RECORDING_SECONDS}s · auto-sends at limit`
+                  : recorderAvailable ? 'tap to record · 45s maximum' : 'microphone unavailable'}
+              </small>
+            </button>
+          </div>
+        )}
 
         <CrowdPane
           side="model"
@@ -1295,10 +1324,9 @@ export function App() {
                 aria-label="Counterfactual proof"
               >
                 <header>
-                  <span>COUNTERFACTUAL PROOF</span>
-                  <strong>SAME TRANSCRIPT · SAME DETERMINISTIC GEMMA</strong>
+                  <span>CAUSAL PROOF</span>
+                  <strong>SAME WORDS · TWO CONTEXTS · SAME GEMMA</strong>
                 </header>
-                <q>{counterfactualProof.transcript}</q>
                 <div className="counterfactual-grid">
                   <article className="counterfactual-side counterfactual-side--baseline">
                     <span>TRANSCRIPT ONLY</span>

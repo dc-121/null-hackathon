@@ -49,7 +49,7 @@ export function CrowdPane({
       className={`pane pane--${side}`}
       data-emotion={emotion ?? 'waiting'}
       style={{
-        '--pane-emotion-mix': `${Math.round(7 + Math.max(0, Math.min(1, confidence)) * 25)}%`,
+        '--pane-emotion-mix': `${Math.round(10 + Math.max(0, Math.min(1, confidence)) * 38)}%`,
       } as CSSProperties}
       aria-label={`${title} emotion crowd`}
     >

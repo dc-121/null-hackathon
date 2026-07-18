@@ -305,6 +305,16 @@ button {
   width: 100%;
   height: 100%;
   filter: saturate(1.06) contrast(1.02);
+  transition: opacity 280ms ease, filter 280ms ease;
+}
+
+.pane[data-emotion="waiting"] .crowd {
+  opacity: 0.28;
+  filter: saturate(0.55) contrast(0.9);
+}
+
+.pane[data-emotion="waiting"] .emotion-bars {
+  opacity: 0.16;
 }
 
 .pane-vignette {
@@ -312,8 +322,8 @@ button {
   inset: 0;
   pointer-events: none;
   background:
-    linear-gradient(180deg, rgba(5, 6, 9, 0.9), transparent 24%, transparent 68%, rgba(5, 6, 9, 0.78)),
-    linear-gradient(90deg, rgba(5, 6, 9, 0.35), transparent 22%, transparent 78%, rgba(5, 6, 9, 0.2));
+    linear-gradient(180deg, rgba(5, 6, 9, 0.68), transparent 22%, transparent 72%, rgba(5, 6, 9, 0.52)),
+    linear-gradient(90deg, rgba(5, 6, 9, 0.22), transparent 24%, transparent 80%, rgba(5, 6, 9, 0.12));
 }
 
 .pane-heading {
@@ -361,9 +371,65 @@ button {
 
 .camera-card,
 .signal-stack,
+.proof-signal-card,
 .emotion-bars,
 .response-card {
   pointer-events: auto;
+}
+
+.proof-signal-card {
+  --proof-signal-color: var(--muted);
+  position: absolute;
+  top: 62px;
+  left: 22px;
+  display: grid;
+  width: min(230px, 38vw);
+  gap: 6px;
+  padding: 11px;
+  background: rgba(8, 10, 15, 0.82);
+  border: 1px solid color-mix(in srgb, var(--proof-signal-color) 42%, var(--line));
+  border-radius: 13px;
+  box-shadow: 0 16px 46px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(12px);
+}
+
+.proof-signal-card--happy { --proof-signal-color: var(--happy); }
+.proof-signal-card--sad { --proof-signal-color: var(--sad); }
+.proof-signal-card--angry { --proof-signal-color: var(--angry); }
+.proof-signal-card--afraid { --proof-signal-color: var(--afraid); }
+.proof-signal-card--surprised { --proof-signal-color: var(--surprised); }
+
+.proof-signal-card > header {
+  display: grid;
+  gap: 2px;
+  padding: 1px 2px 7px;
+  border-bottom: 1px solid var(--line);
+}
+
+.proof-signal-card > header span,
+.proof-signal-card > small {
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.48rem;
+  letter-spacing: 0.075em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.proof-signal-card > header strong {
+  color: var(--proof-signal-color);
+  font-size: 0.72rem;
+}
+
+.proof-signal-card .signal-chip {
+  min-height: 36px;
+  padding: 6px 7px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.proof-signal-card > small {
+  padding: 2px 2px 0;
+  text-transform: none;
 }
 
 .camera-card {
@@ -679,7 +745,7 @@ button {
 .counterfactual-proof {
   --proof-emotion: var(--muted);
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .counterfactual-proof--happy { --proof-emotion: var(--happy); }
@@ -711,15 +777,6 @@ button {
 .counterfactual-proof > header strong {
   color: var(--fg);
   font-size: 0.69rem;
-}
-
-.counterfactual-proof > q {
-  color: var(--fg);
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: clamp(0.88rem, 1.2vw, 1.08rem);
-  font-style: italic;
-  line-height: 1.35;
-  text-decoration: none;
 }
 
 .counterfactual-grid {
@@ -846,6 +903,27 @@ button {
   background: var(--acid);
   box-shadow: 0 0 16px rgba(201, 255, 87, 0.75);
   transition: height 180ms linear;
+}
+
+.proof-axis-callout {
+  position: absolute;
+  z-index: 10;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.proof-axis-callout span {
+  display: block;
+  padding: 5px 8px;
+  color: var(--acid);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.47rem;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  background: rgba(5, 7, 10, 0.9);
+  border: 1px solid rgba(201, 255, 87, 0.34);
+  border-radius: 999px;
 }
 
 .conversation-control {
@@ -1123,6 +1201,69 @@ button {
   text-align: right;
 }
 
+/* Judge proof is a presentation mode: the crowds and causal comparison are
+   the product. Remove duplicated transcript/legend chrome and consolidate the
+   synthetic input into one compact evidence card. */
+.app-shell.is-proof-mode .topbar {
+  min-height: 56px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.app-shell.is-proof-mode .local-badge {
+  display: none;
+}
+
+.app-shell.is-proof-mode .live-status {
+  min-height: 27px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  font-size: 0.57rem;
+}
+
+.app-shell.is-proof-mode .response-card {
+  top: 62px;
+  max-width: 440px;
+  max-height: calc(100% - 112px);
+  padding: 12px 13px;
+}
+
+.app-shell.is-proof-mode .conversation-dock {
+  grid-template-columns: minmax(500px, 1.3fr) minmax(340px, 1fr);
+  min-height: 96px;
+}
+
+.app-shell.is-proof-mode:not(.has-conversation) .conversation-dock {
+  grid-template-columns: minmax(500px, 720px);
+  justify-content: center;
+}
+
+.app-shell.is-proof-mode .transcript-panel {
+  display: none;
+}
+
+.app-shell.is-proof-mode:not(.has-conversation) .reply-panel {
+  display: none;
+}
+
+.app-shell.is-proof-mode .typed-fallback,
+.app-shell.is-proof-mode .reply-panel {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.app-shell.is-proof-mode .typed-fallback {
+  border-left: 0;
+}
+
+.app-shell.is-proof-mode .pane--user .emotion-bars {
+  display: none;
+}
+
+.app-shell.is-proof-mode .legend-row {
+  display: none;
+}
+
 .notice {
   position: fixed;
   z-index: 50;
@@ -1390,6 +1531,15 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .app-shell.is-proof-mode .conversation-dock,
+  .app-shell.is-proof-mode:not(.has-conversation) .conversation-dock {
+    grid-template-columns: 1fr;
+  }
+
+  .proof-axis-callout {
+    display: none;
+  }
+
   .typed-fallback,
   .reply-panel {
     border-top: 1px solid var(--line);
@@ -1435,6 +1585,12 @@ button {
     right: 14px;
     bottom: 52px;
     width: 150px;
+  }
+
+  .proof-signal-card {
+    top: 72px;
+    left: 14px;
+    width: 190px;
   }
 
   .emotion-bars {

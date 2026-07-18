@@ -26,7 +26,10 @@ import { PARTICLES, particleGeometries, type ParticleShape } from './particles.j
  * block of one emotion. The mix is expressive enough on its own; the crowd
  * size shouldn't move.
  */
-const CROWD_SIZE = 120;
+// A smaller cast keeps each person readable and gives the two emotional
+// populations room to breathe. Density should communicate a mixture, not
+// turn the experience into visual noise.
+const CROWD_SIZE = 96;
 const MAX_AGENTS = CROWD_SIZE;
 
 /**
@@ -143,19 +146,19 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x0a0a0c, 0.026);
+  scene.fog = new THREE.FogExp2(0x0a0a0c, 0.021);
 
   const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 120);
   // Steep enough that the ground plane fills the frame rather than sitting in
   // a band across the middle.
-  camera.position.set(0, 15, 13);
+  camera.position.set(0, 13.5, 11.5);
   camera.lookAt(0, 0.4, 0);
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.66));
-  const key = new THREE.DirectionalLight(0xffffff, 1.0);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.82));
+  const key = new THREE.DirectionalLight(0xffffff, 1.12);
   key.position.set(5, 10, 8);
   scene.add(key);
-  const rim = new THREE.DirectionalLight(0x7fa8ff, 0.45);
+  const rim = new THREE.DirectionalLight(0x7fa8ff, 0.62);
   rim.position.set(-7, 3, -9);
   scene.add(rim);
 
@@ -522,10 +525,24 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
         }
 
         case 'withdraw': {
-          // Drifts outward, keeps to the edges.
-          const d = Math.hypot(a.pos.x, a.pos.z) || 1;
-          a.vel.x += (a.pos.x / d) * 0.004;
-          a.vel.z += (a.pos.z / d) * 0.004;
+          // Keeps social distance without evacuating the visible stage. The
+          // old global outward force parked every sad/guilty figure against
+          // the frustum boundary, which made an intense sad signal look like
+          // an empty crowd. Local avoidance preserves the withdrawn behavior
+          // while keeping the population legible.
+          if (a.target < 0 || a.target >= agents.length || a.cooldown <= 0) {
+            a.target = nearest(a, i, 9);
+            a.cooldown = 70 + Math.random() * 80;
+          }
+          const other = agents[a.target];
+          if (other && other !== a) {
+            const dx = a.pos.x - other.pos.x;
+            const dz = a.pos.z - other.pos.z;
+            const d = Math.hypot(dx, dz) || 1;
+            const push = Math.max(0, 1 - d / 6.5) * 0.0032;
+            a.vel.x += (dx / d) * push;
+            a.vel.z += (dz / d) * push;
+          }
           break;
         }
 
