@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gemma weight-to-voice lab</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">GEMMA 4 E4B · LAYER 28 · ELEVEN v3</p>
+        <h1>Weight-to-voice transfer</h1>
+      </div>
+      <p class="claim">No text sentiment classifier. Voice directions are compiled from internal activation vectors.</p>
+    </header>
+
+    <form id="prompt-form">
+      <label for="prompt">Prompt</label>
+      <textarea id="prompt" rows="3">Respond in three short sentences: first react to discovering someone sabotaged months of your work, then realize the backup survived, then celebrate that we can still win.</textarea>
+      <div class="controls">
+        <label>Phrase window
+          <span><output id="phrase-value">6</output> tokens</span>
+          <input id="phrase-tokens" type="range" min="3" max="10" value="6">
+        </label>
+        <label>Delivery
+          <select id="delivery-mode">
+            <option value="raw" selected>Raw theatrical</option>
+            <option value="safe">Assistant-safe</option>
+          </select>
+        </label>
+        <button id="run" type="submit">Generate + trace + speak</button>
+      </div>
+      <p id="status" role="status">Gemma is loaded locally. One run produces text, activation evidence, tags, and audio.</p>
+    </form>
+
+    <section id="results" hidden>
+      <div class="pipeline" aria-label="Processing pipeline">
+        <span>9 layer-28 cosines</span><b>→</b><span>Neutral z + Δz</span><b>→</b><span>Strongest stable signal</span><b>→</b><span>1 emotion direction</span><b>→</b><span>Eleven v3</span>
+      </div>
+
+      <section class="response-block">
+        <div>
+          <p class="section-label">Gemma response</p>
+          <p id="response"></p>
+        </div>
+        <div class="timing">
+          <span id="generation-time"></span>
+          <span id="replay-time"></span>
+        </div>
+      </section>
+
+      <audio id="audio" controls></audio>
+
+      <section>
+        <div class="section-heading">
+          <div>
+            <p class="section-label">Phrase timeline</p>
+            <h2>Emotion changes every few tokens</h2>
+          </div>
+          <p>One winner controls the voice; all nine measurements stay visible.</p>
+        </div>
+        <div id="phrase-strip" class="phrase-strip"></div>
+      </section>
+
+      <section class="inspector">
+        <div class="selected-copy">
+          <p class="section-label">Selected phrase</p>
+          <blockquote id="selected-text"></blockquote>
+          <p class="section-label">Exact ElevenLabs direction</p>
+          <code id="selected-tags"></code>
+        </div>
+
+        <div class="signal-table" role="table" aria-label="Nine emotion activation signals">
+          <div class="signal-head" role="row">
+            <span>Vector</span><span>Raw cosine</span><span>Neutral z</span><span>Δz from prompt</span><span>Evidence share</span>
+          </div>
+          <div id="signal-rows"></div>
+        </div>
+      </section>
+
+      <details>
+        <summary>Exact tagged text sent to ElevenLabs</summary>
+        <pre id="tagged-text"></pre>
+      </details>
+      <p class="footnote">Only evidence ≥ 1.25 can control the voice. A new direction must beat the current one by both 20% and 0.50 evidence to prevent tag flicker. Evidence shares are diagnostics, not emotion probabilities.</p>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

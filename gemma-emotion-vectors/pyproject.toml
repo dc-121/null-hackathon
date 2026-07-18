@@ -5,10 +5,14 @@ description = "Token-level Gemma tracing with published emotion vectors"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "fastapi>=0.116",
     "huggingface-hub>=0.36",
+    "httpx>=0.28",
     "numpy>=1.24",
+    "python-dotenv>=1.0",
     "torch>=2.7",
     "transformers>=5.5,<6",
+    "uvicorn>=0.35",
 ]
 
 [tool.uv]
