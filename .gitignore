@@ -34,3 +34,7 @@ pnpm-debug.log*
 coverage/
 .turbo/
 .cache/
+
+# Vite
+dist/
+.vite/
