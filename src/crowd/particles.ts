@@ -43,8 +43,8 @@ export const PARTICLES: Record<string, ParticleSpec> = {
   angry: {
     // Steam off the top of the head, billowing as it climbs.
     shape: 'puff',
-    rise: 1.5,
-    drift: 0.35,
+    rise: 0.75,
+    drift: 0.22,
     size: 0.16,
     grow: 2.6,
     color: [0.02, 0.5, 0.62],
@@ -65,8 +65,8 @@ export const PARTICLES: Record<string, ParticleSpec> = {
   loving: {
     // Hearts, rising and swaying.
     shape: 'heart',
-    rise: 1.8,
-    drift: 0.5,
+    rise: 0.9,
+    drift: 0.3,
     size: 0.2,
     grow: 1.15,
     color: [0.95, 0.72, 0.66],
@@ -75,38 +75,38 @@ export const PARTICLES: Record<string, ParticleSpec> = {
   desperate: {
     // Sweat, flung off sideways.
     shape: 'drop',
-    rise: -0.6,
-    drift: 0.85,
+    rise: -0.35,
+    drift: 0.4,
     size: 0.08,
     grow: 0.9,
     color: [0.55, 0.6, 0.8],
-    rate: 0.02,
+    rate: 0.011,
   },
   surprised: {
     // A shock mark that pops out and vanishes.
     shape: 'spark',
-    rise: 0.9,
-    drift: 0.15,
+    rise: 0.45,
+    drift: 0.1,
     size: 0.22,
     grow: 0.5,
     color: [0.14, 0.9, 0.7],
-    rate: 0.028,
+    rate: 0.014,
   },
   afraid: {
     // Cold little beads, shaken loose.
     shape: 'drop',
-    rise: 0.5,
-    drift: 0.7,
+    rise: 0.28,
+    drift: 0.32,
     size: 0.07,
     grow: 0.7,
     color: [0.58, 0.55, 0.85],
-    rate: 0.024,
+    rate: 0.012,
   },
   guilty: {
     // A small dark cloud that hangs over them.
     shape: 'puff',
-    rise: 0.55,
-    drift: 0.18,
+    rise: 0.3,
+    drift: 0.12,
     size: 0.17,
     grow: 1.5,
     color: [0.62, 0.12, 0.26],

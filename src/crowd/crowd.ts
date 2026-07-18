@@ -430,14 +430,22 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
         }
 
         case 'flee': {
-          const t = nearest(a, i, 7);
-          if (t >= 0) {
-            const o = agents[t];
+          // Hold on to the threat. Re-sampling every frame means the direction
+          // it's running FROM changes 60 times a second, which is a vibration,
+          // not a flight.
+          if (a.cooldown <= 0) {
+            a.target = nearest(a, i, 7);
+            a.cooldown = 30 + Math.random() * 40;
+          }
+          const o = agents[a.target];
+          if (o && o !== a) {
             const dx = a.pos.x - o.pos.x;
             const dz = a.pos.z - o.pos.z;
             const d = Math.hypot(dx, dz) || 1;
-            a.vel.x += (dx / d) * 0.007;
-            a.vel.z += (dz / d) * 0.007;
+            // Falls off with distance — once it's clear it stops shoving.
+            const push = Math.max(0, 1 - d / 9) * 0.007;
+            a.vel.x += (dx / d) * push;
+            a.vel.z += (dz / d) * push;
           }
           break;
         }
@@ -731,7 +739,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
         a.emit += spec.rate;
         if (a.emit > 1) a.emit -= 1;
         const life = a.emit;
-        const wobble = Math.sin(life * Math.PI * 3 + a.seed) * spec.drift;
+        const wobble = Math.sin(life * Math.PI * 1.4 + a.seed) * spec.drift;
         dummy.position.set(
           headX + wobble * h + Math.sin(a.seed) * 0.16 * h,
           (spec.fromEyes ? headY - 0.02 * h : headY + 0.32 * h) + life * spec.rise * h,
