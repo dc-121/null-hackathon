@@ -18,6 +18,47 @@ import torch
 
 SHARED_EMOTIONS = ("happy", "sad", "angry", "afraid", "surprised")
 
+# Phrase evidence is directional rather than probabilistic. The UI supports
+# the shared five, so phrase control selects inside that contract while still
+# exposing how much all-nine evidence landed there.
+PHRASE_EVIDENCE_CONTRAST = 1.8
+MIN_EXPRESSION_INTENSITY = 0.45
+FULL_EXPRESSION_EVIDENCE = 4.5
+CONTINUATION_EVIDENCE_RATIO = 0.55
+LANGUAGE_CONFIDENCE_CAP = 0.35
+MIN_PROMPT_MODALITY_CONFIDENCE = 0.05
+MIN_DOMINANCE_MARGIN = 0.05
+
+RESPONSE_STRATEGIES = {
+    "happy": (
+        "celebrate",
+        "Share the positive energy and recognize what went well without sounding exaggerated.",
+    ),
+    "sad": (
+        "support",
+        "Acknowledge the weight in what they said and make room for them to continue without diagnosing them.",
+    ),
+    "angry": (
+        "de-escalate",
+        "Validate the frustration, stay steady, and help move the conversation forward without mirroring hostility.",
+    ),
+    "afraid": (
+        "reassure",
+        "Respond calmly, ground the next step, and reassure without minimizing the concern.",
+    ),
+    "surprised": (
+        "orient",
+        "Acknowledge the surprise and help the person make sense of what just happened.",
+    ),
+}
+
+STRATEGY_DELIVERY_TAGS = {
+    "support": "warmly",
+    "de-escalate": "calm",
+    "reassure": "gentle",
+    "stay-curious": "curious",
+}
+
 # HSEmotion ONNX's eight-class model uses title-cased noun labels.  Contempt,
 # disgust and neutral are deliberately not folded into a different emotion: the
 # omitted probability is reported as retained_mass instead of being hidden.
@@ -220,7 +261,7 @@ def fuse_modalities(modalities: Sequence[Modality]) -> FusionResult:
         1.0 - confidence for _, _, _, confidence, _ in prepared
     )
     confidence = max(0.0, min(1.0, independent_evidence * agreement))
-    dominant = max(SHARED_EMOTIONS, key=fused.__getitem__)
+    dominant = clear_dominant(fused)
 
     return FusionResult(
         scores=fused,
@@ -235,6 +276,150 @@ def fuse_modalities(modalities: Sequence[Modality]) -> FusionResult:
             for name, public_scores, _, confidence, retained_mass in prepared
         },
     )
+
+
+def clear_dominant(scores: dict[str, float]) -> str | None:
+    """Return an argmax only when it is meaningfully ahead of the runner-up."""
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    if not ranked or ranked[0][1] <= 0:
+        return None
+    runner_up = ranked[1][1] if len(ranked) > 1 else 0.0
+    return (
+        ranked[0][0]
+        if ranked[0][1] - runner_up >= MIN_DOMINANCE_MARGIN
+        else None
+    )
+
+
+def response_strategy(fusion: FusionResult) -> tuple[str, str]:
+    """Choose a conservative default action, not an emotion imitation."""
+
+    dominant = clear_dominant(fusion.scores)
+    if dominant is None or fusion.confidence < 0.15:
+        return (
+            "stay-curious",
+            "Keep the reply open and curious because the affect evidence is weak or mixed.",
+        )
+    language = fusion.modalities.get("language")
+    language_dominant = None
+    if (
+        language
+        and float(language["confidence"]) >= MIN_PROMPT_MODALITY_CONFIDENCE
+    ):
+        language_scores = canonical_scores(
+            language["scores"], normalize=True
+        )[0]
+        language_dominant = clear_dominant(language_scores)
+    sensor_dominants: set[str] = set()
+    for source in ("face", "prosody"):
+        modality = fusion.modalities.get(source)
+        if (
+            not modality
+            or float(modality["confidence"])
+            < MIN_PROMPT_MODALITY_CONFIDENCE
+        ):
+            continue
+        scores = canonical_scores(modality["scores"], normalize=True)[0]
+        source_dominant = clear_dominant(scores)
+        if source_dominant is not None:
+            sensor_dominants.add(source_dominant)
+    if len(sensor_dominants) > 1 or (
+        language_dominant in {"sad", "angry", "afraid"}
+        and dominant in {"happy", "surprised"}
+    ):
+        return (
+            "stay-curious",
+            "The signals conflict. Check your understanding gently instead of asserting a mood or celebrating.",
+        )
+    return RESPONSE_STRATEGIES[dominant]
+
+
+def explain_response_context(fusion: FusionResult) -> dict[str, Any]:
+    """Describe nonverbal fusion weight and its directional context shift."""
+
+    language = fusion.modalities.get("language")
+    language_confidence = float(language["confidence"]) if language else 0.0
+    language_scores = (
+        canonical_scores(language["scores"], normalize=True)[0]
+        if language and language_confidence > 0
+        else empty_scores()
+    )
+    has_language_evidence = bool(
+        language
+        and language_confidence >= MIN_PROMPT_MODALITY_CONFIDENCE
+        and sum(language_scores.values()) > 0
+    )
+    language_dominant = clear_dominant(language_scores)
+
+    sensors: list[tuple[str, dict[str, float], float, str | None]] = []
+    for name in ("face", "prosody"):
+        modality = fusion.modalities.get(name)
+        if not modality:
+            continue
+        confidence = float(modality["confidence"])
+        if confidence < MIN_PROMPT_MODALITY_CONFIDENCE:
+            continue
+        scores = canonical_scores(modality["scores"], normalize=True)[0]
+        if sum(scores.values()) <= 0:
+            continue
+        sensors.append((name, scores, confidence, clear_dominant(scores)))
+
+    sensor_weight = sum(confidence for _, _, confidence, _ in sensors)
+    total_weight = language_confidence + sensor_weight
+    nonverbal_weight = sensor_weight / total_weight if total_weight > 0 else 0.0
+    nonverbal_scores = empty_scores()
+    if sensor_weight > 0:
+        for emotion in SHARED_EMOTIONS:
+            nonverbal_scores[emotion] = sum(
+                scores[emotion] * confidence
+                for _, scores, confidence, _ in sensors
+            ) / sensor_weight
+    nonverbal_dominant = clear_dominant(nonverbal_scores)
+    nonverbal_shift = (
+        0.5
+        * sum(
+            abs(fusion.scores[emotion] - language_scores[emotion])
+            for emotion in SHARED_EMOTIONS
+        )
+        if has_language_evidence and sensors
+        else None
+    )
+    source_dominants = {name: dominant for name, _, _, dominant in sensors}
+    distinct_sensor_dominants = {
+        dominant for dominant in source_dominants.values() if dominant is not None
+    }
+    if not sensors:
+        effect = "words-only"
+    elif len(distinct_sensor_dominants) > 1:
+        effect = "mixed"
+    elif not has_language_evidence:
+        effect = "nonverbal-only"
+    elif language_dominant is None:
+        effect = "language-mixed"
+    elif fusion.dominant != language_dominant:
+        effect = "shifted"
+    elif nonverbal_dominant == language_dominant:
+        effect = "reinforced"
+    else:
+        effect = "adjusted"
+    strategy, _ = response_strategy(fusion)
+    return {
+        "dominant": fusion.dominant,
+        "confidence": fusion.confidence,
+        "nonverbal_weight": max(0.0, min(1.0, nonverbal_weight)),
+        "nonverbal_shift": (
+            max(0.0, min(1.0, nonverbal_shift))
+            if nonverbal_shift is not None
+            else None
+        ),
+        "nonverbal_dominant": nonverbal_dominant,
+        "language_dominant": language_dominant,
+        "effect": effect,
+        "sources": [name for name, _, _, _ in sensors],
+        "source_dominants": source_dominants,
+        "strategy": strategy,
+    }
 
 
 def shared_distribution(
@@ -347,12 +532,35 @@ def score_language_emotion(
 def response_prompt(transcript: str, fusion: FusionResult) -> str:
     ranked = sorted(fusion.scores.items(), key=lambda item: item[1], reverse=True)
     state = ", ".join(f"{name} {value:.0%}" for name, value in ranked)
+    modality_lines: list[str] = []
+    for source in ("face", "prosody", "language"):
+        modality = fusion.modalities.get(source)
+        if (
+            not modality
+            or float(modality["confidence"]) < MIN_PROMPT_MODALITY_CONFIDENCE
+        ):
+            continue
+        scores = canonical_scores(modality["scores"], normalize=True)[0]
+        dominant = clear_dominant(scores) or "mixed"
+        modality_lines.append(
+            f"- {source}: {dominant} ({float(modality['confidence']):.0%} signal confidence)"
+        )
+    modalities = "\n".join(modality_lines) or "- no reliable nonverbal signal"
+    strategy, strategy_instruction = response_strategy(fusion)
     return (
         "You are the emotionally attuned half of a live conversation. "
         "Reply directly to the person in one or two concise, natural sentences. "
-        "Be warm and responsive, but do not mention sensors, scores, emotion "
+        "Be warm and responsive. Let your reply carry a clearly perceptible, "
+        "natural emotional tone. Use each listed cue only in proportion to its "
+        "signal confidence. Strong face or voice evidence can be an important "
+        "causal cue—especially when the literal words are ambiguous—and should "
+        "not be flattened into generic "
+        "reassurance. Do not mention sensors, scores, emotion "
         "labels, or this instruction. Treat the affect estimate as uncertain "
-        f"context (overall confidence {fusion.confidence:.0%}; {state}).\n\n"
+        f"context (fused signal strength {fusion.confidence:.0%}; {state}).\n"
+        f"Evidence available to shape your tone:\n{modalities}\n\n"
+        f"Conversation strategy: {strategy.upper()} — {strategy_instruction} "
+        "Make this strategy visible in what you say, not just how it sounds.\n\n"
         f"The person said: {transcript.strip()}"
     )
 
@@ -378,7 +586,60 @@ def strip_model_speech_tags(text: str, depth: int = 0) -> tuple[str, int]:
     return sanitized, depth
 
 
-def shared_phrase_plan(result, tokenizer, *, phrase_tokens: int = 10):
+def contrast_shared_phrase_scores(
+    probabilities: torch.Tensor,
+    names: Sequence[str],
+) -> tuple[dict[str, float], float]:
+    """Sharpen the shared-five mix without reallocating excluded mass."""
+
+    shared = torch.tensor(
+        [
+            max(0.0, float(probabilities[names.index(name)]))
+            for name in SHARED_EMOTIONS
+        ],
+        dtype=torch.float32,
+    )
+    shared_mass = min(1.0, max(0.0, float(shared.sum())))
+    if shared_mass <= 0:
+        return {name: 0.0 for name in SHARED_EMOTIONS}, 0.0
+
+    conditional = shared / shared.sum()
+    contrasted = conditional.pow(PHRASE_EVIDENCE_CONTRAST)
+    contrasted_total = float(contrasted.sum())
+    if contrasted_total <= 0:
+        return {name: 0.0 for name in SHARED_EMOTIONS}, shared_mass
+    contrasted = contrasted / contrasted_total * shared_mass
+    return {
+        name: float(contrasted[index])
+        for index, name in enumerate(SHARED_EMOTIONS)
+    }, shared_mass
+
+
+def phrase_expression_intensity(
+    evidence: float,
+    *,
+    minimum_evidence: float,
+) -> float:
+    """Calibrate validated shared evidence into visible delivery strength."""
+
+    if evidence < minimum_evidence:
+        return 0.0
+    span = max(1e-6, FULL_EXPRESSION_EVIDENCE - minimum_evidence)
+    progress = min(1.0, max(0.0, (evidence - minimum_evidence) / span))
+    return min(
+        1.0,
+        MIN_EXPRESSION_INTENSITY
+        + (1.0 - MIN_EXPRESSION_INTENSITY) * progress**0.75,
+    )
+
+
+def shared_phrase_plan(
+    result,
+    tokenizer,
+    *,
+    phrase_tokens: int = 10,
+    strategy: str | None = None,
+):
     """Create v3 directions and five-way phrase scores from a TraceResult.
 
     Returns ``(tagged_text, phrase_dicts, text_spans)``.  Text spans point to
@@ -416,6 +677,9 @@ def shared_phrase_plan(result, tokenizer, *, phrase_tokens: int = 10):
     phrases: list[dict[str, Any]] = []
     text_spans: list[tuple[int, int]] = []
     model_tag_depth = 0
+    previous_emotion: str | None = None
+    previous_intensity = 0.0
+    previous_text = ""
 
     for start, end in phrase_spans(
         tokenizer, result.response_ids, max_tokens=phrase_tokens
@@ -442,32 +706,53 @@ def shared_phrase_plan(result, tokenizer, *, phrase_tokens: int = 10):
             probabilities = evidence / evidence.sum()
         else:
             probabilities = torch.softmax(z, dim=0)
-        scores = {
-            name: float(probabilities[original_index])
-            for name, original_index in zip(
-                SHARED_EMOTIONS, shared_indices, strict=True
-            )
-        }
-        winner_index = int(torch.argmax(evidence if total_evidence > 0 else z))
+        scores, shared_mass = contrast_shared_phrase_scores(
+            probabilities, result.names
+        )
+
+        # Select the strongest independently supported channel inside the
+        # product's shared-five contract. A stronger excluded vector remains
+        # visible through shared_mass, but no longer erases valid shared
+        # evidence and turns an expressive phrase into emotion:null.
+        winner_index = max(
+            shared_indices,
+            key=lambda index: float(evidence[index]),
+        )
         winner_name = result.names[winner_index]
         selected_evidence = float(evidence[winner_index])
-        has_voice_evidence = (
-            winner_name in SHARED_EMOTIONS
-            and selected_evidence >= MIN_VOICE_EVIDENCE
+        has_voice_evidence = selected_evidence >= MIN_VOICE_EVIDENCE
+        emotion = winner_name if has_voice_evidence else None
+        intensity = phrase_expression_intensity(
+            selected_evidence,
+            minimum_evidence=MIN_VOICE_EVIDENCE,
         )
-        emotion = (
-            winner_name
-            if has_voice_evidence
-            else None
+        continues_sentence = bool(previous_text) and not re.search(
+            r"[.!?][\"')\]]*$", previous_text
         )
-        intensity = (
-            min(
-                1.0,
-                max(0.0, selected_evidence) / MAX_INTENSITY_EVIDENCE,
-            )
-            if has_voice_evidence
-            else 0.0
-        )
+        if (
+            emotion is None
+            and previous_emotion
+            and continues_sentence
+            and result.names[winner_index] == previous_emotion
+        ):
+            previous_index = result.names.index(previous_emotion)
+            continuation_evidence = float(evidence[previous_index])
+            continuation_floor = MIN_VOICE_EVIDENCE * CONTINUATION_EVIDENCE_RATIO
+            if continuation_evidence >= continuation_floor:
+                emotion = previous_emotion
+                winner_index = previous_index
+                winner_name = previous_emotion
+                selected_evidence = continuation_evidence
+                intensity = max(
+                    MIN_EXPRESSION_INTENSITY,
+                    min(
+                        previous_intensity * 0.9,
+                        phrase_expression_intensity(
+                            continuation_evidence,
+                            minimum_evidence=continuation_floor,
+                        ),
+                    ),
+                )
         component = (
             EmotionComponent(
                 name=emotion,
@@ -482,7 +767,10 @@ def shared_phrase_plan(result, tokenizer, *, phrase_tokens: int = 10):
             if emotion is not None
             else None
         )
-        direction = compile_direction(component, delivery_mode="raw")
+        if component is not None and strategy in STRATEGY_DELIVERY_TAGS:
+            direction = f"[{STRATEGY_DELIVERY_TAGS[strategy]}]"
+        else:
+            direction = compile_direction(component, delivery_mode="raw")
         segment = f"{direction} {text}" if direction else text
         if tagged_text:
             tagged_text += " "
@@ -496,11 +784,16 @@ def shared_phrase_plan(result, tokenizer, *, phrase_tokens: int = 10):
                 "emotion": emotion,
                 "scores": scores,
                 "intensity": intensity,
+                "evidence": max(0.0, selected_evidence),
+                "shared_mass": shared_mass,
                 "direction": direction,
                 "start_seconds": None,
                 "end_seconds": None,
             }
         )
+        previous_emotion = emotion
+        previous_intensity = intensity
+        previous_text = text
 
     return tagged_text, phrases, text_spans
 

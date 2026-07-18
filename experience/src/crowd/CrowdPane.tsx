@@ -6,7 +6,7 @@
  * frame. Nothing here mirrors emotion into useState.
  */
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import { startCrowd } from './crowd.js';
 import type { Emotion, Side } from '../state/emotion.js';
 
@@ -48,6 +48,9 @@ export function CrowdPane({
     <section
       className={`pane pane--${side}`}
       data-emotion={emotion ?? 'waiting'}
+      style={{
+        '--pane-emotion-mix': `${Math.round(7 + Math.max(0, Math.min(1, confidence)) * 25)}%`,
+      } as CSSProperties}
       aria-label={`${title} emotion crowd`}
     >
       <canvas ref={canvasRef} className="crowd" />

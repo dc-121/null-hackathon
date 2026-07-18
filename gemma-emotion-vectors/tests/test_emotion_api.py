@@ -11,8 +11,10 @@ from scripts.emotion_api import (
     SHARED_EMOTIONS,
     add_phrase_timings,
     canonical_scores,
+    explain_response_context,
     fuse_modalities,
     hsemotion_score_mapping,
+    response_prompt,
     shared_distribution,
     shared_phrase_plan,
 )
@@ -141,6 +143,138 @@ class FusionTests(unittest.TestCase):
         self.assertAlmostEqual(language["retained_mass"], 0.05)
         self.assertAlmostEqual(language["confidence"], 0.05)
 
+    def test_response_context_quantifies_nonverbal_fusion_contribution(self) -> None:
+        happy = {name: 0.0 for name in SHARED_EMOTIONS}
+        happy["happy"] = 1.0
+        sad = {name: 0.0 for name in SHARED_EMOTIONS}
+        sad["sad"] = 1.0
+        fused = fuse_modalities(
+            [
+                Modality("language", happy, 0.35),
+                Modality("face", sad, 0.8),
+                Modality("prosody", sad, 0.4),
+            ]
+        )
+
+        context = explain_response_context(fused)
+
+        self.assertEqual(context["language_dominant"], "happy")
+        self.assertEqual(context["nonverbal_dominant"], "sad")
+        self.assertEqual(context["dominant"], "sad")
+        self.assertEqual(context["effect"], "shifted")
+        self.assertEqual(context["sources"], ["face", "prosody"])
+        self.assertGreater(context["nonverbal_weight"], 0.7)
+        self.assertGreater(context["nonverbal_shift"], 0.5)
+        self.assertEqual(context["strategy"], "support")
+        prompt = response_prompt("I guess it is over.", fused)
+        self.assertIn("- face: sad", prompt)
+        self.assertIn("- prosody: sad", prompt)
+        self.assertIn("important causal cue", prompt)
+        self.assertIn("Conversation strategy: SUPPORT", prompt)
+
+    def test_low_confidence_conflict_is_not_promoted_in_the_prompt(self) -> None:
+        happy = {name: 0.0 for name in SHARED_EMOTIONS}
+        happy["happy"] = 1.0
+        sad = {name: 0.0 for name in SHARED_EMOTIONS}
+        sad["sad"] = 1.0
+        fused = fuse_modalities(
+            [
+                Modality("language", happy, 0.35),
+                Modality("face", sad, 0.001),
+            ]
+        )
+
+        context = explain_response_context(fused)
+        prompt = response_prompt("It is over.", fused)
+
+        self.assertEqual(context["effect"], "words-only")
+        self.assertEqual(context["sources"], [])
+        self.assertNotIn("- face:", prompt)
+        self.assertIn("only in proportion", prompt)
+
+    def test_context_distinguishes_adjustment_mixed_and_nonverbal_only(self) -> None:
+        happy = {name: 0.0 for name in SHARED_EMOTIONS}
+        happy["happy"] = 1.0
+        sad = {name: 0.0 for name in SHARED_EMOTIONS}
+        sad["sad"] = 1.0
+        empty = {name: 0.0 for name in SHARED_EMOTIONS}
+        uniform = {name: 0.2 for name in SHARED_EMOTIONS}
+
+        adjusted = explain_response_context(
+            fuse_modalities(
+                [
+                    Modality("language", happy, 0.8),
+                    Modality("face", sad, 0.1),
+                ]
+            )
+        )
+        mixed = explain_response_context(
+            fuse_modalities(
+                [
+                    Modality("language", happy, 0.35),
+                    Modality("face", happy, 0.8),
+                    Modality("prosody", sad, 0.8),
+                ]
+            )
+        )
+        nonverbal_only = explain_response_context(
+            fuse_modalities(
+                [
+                    Modality("language", empty, 0.0, retained_mass=0.0),
+                    Modality("face", sad, 0.8),
+                ]
+            )
+        )
+        language_mixed = explain_response_context(
+            fuse_modalities(
+                [
+                    Modality("language", uniform, 0.35),
+                    Modality("face", sad, 0.8),
+                ]
+            )
+        )
+
+        self.assertEqual(adjusted["effect"], "adjusted")
+        self.assertEqual(adjusted["dominant"], "happy")
+        self.assertEqual(mixed["effect"], "mixed")
+        self.assertEqual(mixed["source_dominants"], {"face": "happy", "prosody": "sad"})
+        self.assertEqual(nonverbal_only["effect"], "nonverbal-only")
+        self.assertEqual(nonverbal_only["nonverbal_weight"], 1.0)
+        self.assertIsNone(nonverbal_only["nonverbal_shift"])
+        self.assertEqual(language_mixed["effect"], "language-mixed")
+        self.assertIsNone(language_mixed["language_dominant"])
+        self.assertIsNotNone(language_mixed["nonverbal_shift"])
+
+    def test_mixed_or_negative_conflict_uses_a_check_in_strategy(self) -> None:
+        happy = {name: 0.0 for name in SHARED_EMOTIONS}
+        happy["happy"] = 1.0
+        sad = {name: 0.0 for name in SHARED_EMOTIONS}
+        sad["sad"] = 1.0
+        conflicted = fuse_modalities(
+            [
+                Modality("language", sad, 0.35),
+                Modality("face", happy, 0.8),
+            ]
+        )
+
+        context = explain_response_context(conflicted)
+        prompt = response_prompt("My mother died today.", conflicted)
+
+        self.assertEqual(context["effect"], "shifted")
+        self.assertEqual(context["strategy"], "stay-curious")
+        self.assertIn("Conversation strategy: STAY-CURIOUS", prompt)
+        self.assertNotIn("Conversation strategy: CELEBRATE", prompt)
+
+    def test_uniform_fusion_has_no_public_dominant(self) -> None:
+        uniform = {name: 0.2 for name in SHARED_EMOTIONS}
+
+        fused = fuse_modalities([Modality("language", uniform, 0.35)])
+        context = explain_response_context(fused)
+
+        self.assertIsNone(fused.dominant)
+        self.assertIsNone(context["dominant"])
+        self.assertEqual(context["strategy"], "stay-curious")
+
     def test_zero_shared_mass_is_uncertain_instead_of_reassigned(self) -> None:
         names = PhraseTests.names
         values = torch.full((len(names),), -200.0)
@@ -219,20 +353,28 @@ class PhraseTests(unittest.TestCase):
             replay_seconds=0.1,
         )
 
-    def test_excluded_phrase_winner_stays_untagged_with_partial_scores(self) -> None:
+    def test_strong_shared_runner_up_controls_the_five_emotion_surface(self) -> None:
         tagged, phrases, spans = shared_phrase_plan(
             self.make_result(), FakeTokenizer(), phrase_tokens=10
         )
 
-        self.assertEqual([phrase["emotion"] for phrase in phrases], [None, None])
-        self.assertEqual(tagged, "Bright day. Stay close.")
+        self.assertEqual(
+            [phrase["emotion"] for phrase in phrases],
+            ["happy", "sad"],
+        )
+        self.assertNotEqual(tagged, "Bright day. Stay close.")
         for phrase in phrases:
             self.assertEqual(tuple(phrase["scores"]), SHARED_EMOTIONS)
             self.assertLess(sum(phrase["scores"].values()), 1.0)
             self.assertNotIn("loving", phrase["scores"])
             self.assertNotIn("calm", phrase["scores"])
-            self.assertEqual(phrase["direction"], "")
-            self.assertEqual(phrase["intensity"], 0)
+            self.assertTrue(phrase["direction"])
+            self.assertGreaterEqual(phrase["intensity"], 0.45)
+            self.assertGreaterEqual(phrase["evidence"], 1.25)
+            self.assertAlmostEqual(
+                phrase["shared_mass"],
+                sum(phrase["scores"].values()),
+            )
 
         alignment = {
             "characters": list(tagged),
@@ -301,6 +443,118 @@ class PhraseTests(unittest.TestCase):
         self.assertTrue(all(phrase["emotion"] is None for phrase in phrases))
         self.assertTrue(all(phrase["direction"] == "" for phrase in phrases))
         self.assertTrue(all(phrase["intensity"] == 0 for phrase in phrases))
+
+    def test_weak_clause_continues_a_strong_sentence_tone(self) -> None:
+        class ClauseTokenizer:
+            pieces = {
+                1: "I",
+                2: " feel",
+                3: ",",
+                4: " still",
+                5: " very",
+                6: " low.",
+            }
+
+            def decode(self, token_ids, **_kwargs):
+                if isinstance(token_ids, int):
+                    token_ids = [token_ids]
+                return "".join(self.pieces[token_id] for token_id in token_ids)
+
+        scores = torch.zeros((7, len(self.names)))
+        scores[1:4, self.names.index("sad")] = 3.0
+        scores[4:7, self.names.index("sad")] = 1.1
+        result = TraceResult(
+            response="I feel, still very low.",
+            response_ids=[1, 2, 3, 4, 5, 6],
+            labels=[],
+            names=self.names,
+            scores=scores,
+            neutral_mean=torch.zeros(len(self.names)),
+            neutral_std=torch.ones(len(self.names)),
+            generation_seconds=0.1,
+            replay_seconds=0.1,
+        )
+
+        tagged, phrases, _spans = shared_phrase_plan(
+            result, ClauseTokenizer(), phrase_tokens=10
+        )
+
+        self.assertEqual([phrase["emotion"] for phrase in phrases], ["sad", "sad"])
+        self.assertTrue(all(phrase["direction"] for phrase in phrases))
+        self.assertGreaterEqual(phrases[1]["intensity"], 0.45)
+        self.assertIn("still very low", tagged)
+
+    def test_continuation_never_overrides_a_competing_shared_winner(self) -> None:
+        class ClauseTokenizer:
+            pieces = {
+                1: "I",
+                2: " feel",
+                3: ",",
+                4: " but",
+                5: " something",
+                6: " changed.",
+            }
+
+            def decode(self, token_ids, **_kwargs):
+                if isinstance(token_ids, int):
+                    token_ids = [token_ids]
+                return "".join(self.pieces[token_id] for token_id in token_ids)
+
+        scores = torch.zeros((7, len(self.names)))
+        scores[1:4, self.names.index("sad")] = 3.0
+        scores[4:7, self.names.index("happy")] = 1.1
+        scores[4:7, self.names.index("sad")] = 0.95
+        result = TraceResult(
+            response="I feel, but something changed.",
+            response_ids=[1, 2, 3, 4, 5, 6],
+            labels=[],
+            names=self.names,
+            scores=scores,
+            neutral_mean=torch.zeros(len(self.names)),
+            neutral_std=torch.ones(len(self.names)),
+            generation_seconds=0.1,
+            replay_seconds=0.1,
+        )
+
+        _tagged, phrases, _spans = shared_phrase_plan(
+            result, ClauseTokenizer(), phrase_tokens=10
+        )
+
+        self.assertEqual(phrases[0]["emotion"], "sad")
+        self.assertIsNone(phrases[1]["emotion"])
+        self.assertGreater(
+            phrases[1]["scores"]["happy"],
+            phrases[1]["scores"]["sad"],
+        )
+
+    def test_deescalation_strategy_keeps_extreme_angry_voice_steady(self) -> None:
+        original = self.make_result()
+        scores = torch.zeros_like(original.scores)
+        scores[1:, self.names.index("angry")] = 8.0
+        result = TraceResult(
+            response=original.response,
+            response_ids=original.response_ids,
+            labels=original.labels,
+            names=original.names,
+            scores=scores,
+            neutral_mean=original.neutral_mean,
+            neutral_std=original.neutral_std,
+            generation_seconds=original.generation_seconds,
+            replay_seconds=original.replay_seconds,
+        )
+
+        tagged, phrases, _spans = shared_phrase_plan(
+            result,
+            FakeTokenizer(),
+            phrase_tokens=10,
+            strategy="de-escalate",
+        )
+
+        self.assertTrue(all(phrase["emotion"] == "angry" for phrase in phrases))
+        self.assertTrue(all(phrase["intensity"] == 1.0 for phrase in phrases))
+        self.assertTrue(all(phrase["direction"] == "[calm]" for phrase in phrases))
+        self.assertNotIn("furious", tagged)
+        self.assertNotIn("shouts", tagged)
 
     def test_model_authored_voice_tag_is_not_sent_to_elevenlabs(self) -> None:
         class TaggedTokenizer:
@@ -456,6 +710,8 @@ class ConversationContractTests(unittest.TestCase):
                 "emotion": "happy",
                 "scores": scores,
                 "intensity": 0.5,
+                "evidence": 2.0,
+                "shared_mass": 1.0,
                 "direction": "[pleased]",
                 "start_seconds": None,
                 "end_seconds": None,
@@ -518,6 +774,12 @@ class ConversationContractTests(unittest.TestCase):
             validated = ConversationResponse.model_validate(response)
             self.assertIsNotNone(validated.speech_id)
             self.assertEqual(validated.human.dominant, "happy")
+            self.assertEqual(
+                validated.human.modalities["language"].confidence,
+                0.35,
+            )
+            self.assertEqual(validated.response_context.effect, "words-only")
+            self.assertEqual(validated.response_context.nonverbal_weight, 0)
             self.assertEqual(validated.phrases[0].emotion, "happy")
             self.assertIsNotNone(validated.phrases[0].start_seconds)
             self.assertIsNotNone(validated.phrases[0].end_seconds)

@@ -344,7 +344,9 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
     const raw = distribution(want, intensity, effort, movement, emotion);
     // Explicit detections should become legible within a beat. Agent retyping
     // is already capped below, so a faster target here still cannot pop.
-    const distributionSmoothing = emotion.active ? 0.04 : 0.015;
+    const distributionSmoothing = emotion.active
+      ? side === 'model' ? 0.085 : 0.04
+      : 0.015;
     for (let t = 0; t < smoothed.length; t++) {
       smoothed[t] += (raw[t] - smoothed[t]) * distributionSmoothing;
     }
@@ -366,8 +368,10 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
       counts[pick]++;
       agents.push(makeAgent(pick, bounds));
     }
-    // Retype a couple per frame so the mix slides rather than cuts.
-    for (let n = 0; n < 2; n++) {
+    // Model phrases are short, so their already-smoothed target needs to become
+    // legible within the phrase. Human live signals keep the gentler cadence.
+    const retypesPerFrame = side === 'model' ? 4 : 2;
+    for (let n = 0; n < retypesPerFrame; n++) {
       let over = -1;
       let under = -1;
       let mostOver = 0.9;
@@ -430,7 +434,7 @@ export function startCrowd(canvas: HTMLCanvasElement, side: Side): CrowdHandle {
     for (let i = 0; i < agents.length; i++) {
       const a = agents[i];
       const arch = ARCHETYPES[a.archetype];
-      a.blend = Math.min(1, a.blend + 0.04);
+      a.blend = Math.min(1, a.blend + (side === 'model' ? 0.07 : 0.04));
       if (a.cooldown > 0) a.cooldown--;
       if (a.action > 0) a.action = Math.max(0, a.action - 0.06);
       if (a.frozen > 0) a.frozen--;

@@ -29,11 +29,14 @@ import uvicorn
 try:
     from emotion_api import (
         MAX_AUDIO_BYTES,
+        LANGUAGE_CONFIDENCE_CAP,
+        MIN_PROMPT_MODALITY_CONFIDENCE,
         FaceEmotionAnalyzer,
         FaceInferenceUnavailable,
         Modality,
         SHARED_EMOTIONS,
         add_phrase_timings,
+        explain_response_context,
         fuse_modalities,
         response_prompt,
         score_language_emotion,
@@ -58,11 +61,14 @@ try:
 except ModuleNotFoundError:  # imported as scripts.emotion_web in tests
     from scripts.emotion_api import (
         MAX_AUDIO_BYTES,
+        LANGUAGE_CONFIDENCE_CAP,
+        MIN_PROMPT_MODALITY_CONFIDENCE,
         FaceEmotionAnalyzer,
         FaceInferenceUnavailable,
         Modality,
         SHARED_EMOTIONS,
         add_phrase_timings,
+        explain_response_context,
         fuse_modalities,
         response_prompt,
         score_language_emotion,
@@ -193,6 +199,8 @@ class PhraseResponse(BaseModel):
     emotion: SharedEmotion | None
     scores: EmotionScoresResponse
     intensity: float = Field(ge=0, le=1)
+    evidence: float = Field(ge=0)
+    shared_mass: float = Field(ge=0, le=1)
     direction: str
     start_seconds: float | None = Field(default=None, ge=0)
     end_seconds: float | None = Field(default=None, ge=0)
@@ -207,9 +215,38 @@ class ConversationTimings(BaseModel):
     total_seconds: float = Field(ge=0)
 
 
+class ResponseContextResponse(BaseModel):
+    dominant: SharedEmotion | None
+    confidence: float = Field(ge=0, le=1)
+    nonverbal_weight: float = Field(ge=0, le=1)
+    nonverbal_shift: float | None = Field(default=None, ge=0, le=1)
+    nonverbal_dominant: SharedEmotion | None
+    language_dominant: SharedEmotion | None
+    effect: Literal[
+        "words-only",
+        "reinforced",
+        "adjusted",
+        "shifted",
+        "nonverbal-only",
+        "language-mixed",
+        "mixed",
+    ]
+    sources: list[Literal["face", "prosody"]]
+    source_dominants: dict[str, SharedEmotion | None]
+    strategy: Literal[
+        "celebrate",
+        "support",
+        "de-escalate",
+        "reassure",
+        "orient",
+        "stay-curious",
+    ]
+
+
 class ConversationResponse(BaseModel):
     transcript: str
     human: HumanResponse
+    response_context: ResponseContextResponse
     response: str
     speech_id: str | None
     phrases: list[PhraseResponse]
@@ -260,6 +297,8 @@ def config() -> dict:
             "minimum_evidence": MIN_VOICE_EVIDENCE,
             "switch_ratio": EMOTION_SWITCH_RATIO,
             "switch_margin": EMOTION_SWITCH_MARGIN,
+            "language_confidence_cap": LANGUAGE_CONFIDENCE_CAP,
+            "minimum_prompt_modality_confidence": MIN_PROMPT_MODALITY_CONFIDENCE,
         },
     }
 
@@ -396,6 +435,14 @@ def conversation(request: ConversationRequest) -> dict:
                 neutral_std=runtime.neutral_std,
             )
         )
+        # The current transcript-vector scorer is useful supporting evidence,
+        # but the five-prompt calibration suite shows it is not reliable enough
+        # to overpower a good face observation. Keep it visibly contributory
+        # while letting the user's nonverbal signal change Gemma's response.
+        language_confidence = min(
+            language_confidence,
+            LANGUAGE_CONFIDENCE_CAP,
+        )
         language_seconds = perf_counter() - language_started
         modalities = [
             Modality(
@@ -405,7 +452,11 @@ def conversation(request: ConversationRequest) -> dict:
                 retained_mass=sum(language_scores.values()),
             )
         ]
-        if request.face_scores is not None:
+        if (
+            request.face_scores is not None
+            and (request.face_confidence or 0.0)
+            >= MIN_PROMPT_MODALITY_CONFIDENCE
+        ):
             modalities.append(
                 Modality(
                     "face",
@@ -413,7 +464,11 @@ def conversation(request: ConversationRequest) -> dict:
                     request.face_confidence or 0.0,
                 )
             )
-        if request.prosody_scores is not None:
+        if (
+            request.prosody_scores is not None
+            and (request.prosody_confidence or 0.0)
+            >= MIN_PROMPT_MODALITY_CONFIDENCE
+        ):
             modalities.append(
                 Modality(
                     "prosody",
@@ -422,6 +477,7 @@ def conversation(request: ConversationRequest) -> dict:
                 )
             )
         fused = fuse_modalities(modalities)
+        response_context = explain_response_context(fused)
         result = analyze_prompt(
             response_prompt(transcript, fused),
             model=runtime.model,
@@ -433,7 +489,9 @@ def conversation(request: ConversationRequest) -> dict:
             max_new_tokens=96,
         )
         tagged_text, phrases, text_spans = shared_phrase_plan(
-            result, runtime.tokenizer
+            result,
+            runtime.tokenizer,
+            strategy=response_context["strategy"],
         )
 
     speech_id: str | None = None
@@ -469,6 +527,7 @@ def conversation(request: ConversationRequest) -> dict:
     with runtime.jobs_lock:
         runtime.diagnostics[diagnostic_id] = {
             "language": language_diagnostics,
+            "response_context": response_context,
             "response_baseline": response_baseline,
             "response_trace": response_trace,
         }
@@ -483,6 +542,7 @@ def conversation(request: ConversationRequest) -> dict:
             "confidence": fused.confidence,
             "modalities": fused.modalities,
         },
+        "response_context": response_context,
         "response": result.response,
         "speech_id": speech_id,
         "phrases": phrases,

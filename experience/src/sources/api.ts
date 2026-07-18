@@ -20,9 +20,24 @@ export interface ConversationPhrase {
   emotion: Emotion | null;
   scores: EmotionScores;
   intensity: number;
+  evidence: number;
+  sharedMass: number;
   direction: string;
   startSeconds: number | null;
   endSeconds: number | null;
+}
+
+export interface ResponseContext {
+  dominant: Emotion | null;
+  confidence: number;
+  nonverbalWeight: number;
+  nonverbalShift: number | null;
+  nonverbalDominant: Emotion | null;
+  languageDominant: Emotion | null;
+  effect: 'words-only' | 'reinforced' | 'adjusted' | 'shifted' | 'nonverbal-only' | 'language-mixed' | 'mixed';
+  sources: Array<'face' | 'prosody'>;
+  sourceDominants: Partial<Record<'face' | 'prosody', Emotion | null>>;
+  strategy: 'celebrate' | 'support' | 'de-escalate' | 'reassure' | 'orient' | 'stay-curious';
 }
 
 export interface ConversationModality {
@@ -39,6 +54,7 @@ export interface ConversationResponse {
     confidence: number;
     modalities: Record<string, ConversationModality>;
   };
+  responseContext: ResponseContext | null;
   response: string;
   speechId: string | null;
   phrases: ConversationPhrase[];
@@ -72,6 +88,7 @@ const finite = (value: unknown, fallback = 0): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 
 const clamp01 = (value: unknown): number => Math.max(0, Math.min(1, finite(value)));
+const ZERO_CONTEXT_SCORES = normalizeEmotionScores({});
 
 function scoresFrom(value: unknown): EmotionScores {
   if (!isRecord(value)) return normalizeEmotionScores({});
@@ -131,9 +148,54 @@ function parsePhrase(value: unknown): ConversationPhrase | null {
     emotion: emotionFrom(value.emotion, scores, false),
     scores,
     intensity: clamp01(value.intensity),
+    evidence: Math.max(0, finite(value.evidence)),
+    sharedMass: clamp01(
+      value.shared_mass ?? SHARED_EMOTIONS.reduce((sum, emotion) => sum + scores[emotion], 0)
+    ),
     direction: typeof value.direction === 'string' ? value.direction : '',
     startSeconds: typeof value.start_seconds === 'number' ? value.start_seconds : null,
     endSeconds: typeof value.end_seconds === 'number' ? value.end_seconds : null,
+  };
+}
+
+function parseResponseContext(value: unknown): ResponseContext | null {
+  if (!isRecord(value)) return null;
+  const effects: ResponseContext['effect'][] = [
+    'words-only', 'reinforced', 'adjusted', 'shifted', 'nonverbal-only', 'language-mixed', 'mixed',
+  ];
+  const strategies: ResponseContext['strategy'][] = [
+    'celebrate', 'support', 'de-escalate', 'reassure', 'orient', 'stay-curious',
+  ];
+  if (
+    typeof value.effect !== 'string'
+    || !effects.includes(value.effect as ResponseContext['effect'])
+    || typeof value.strategy !== 'string'
+    || !strategies.includes(value.strategy as ResponseContext['strategy'])
+    || typeof value.confidence !== 'number'
+    || typeof value.nonverbal_weight !== 'number'
+  ) return null;
+  const sources = Array.isArray(value.sources)
+    ? value.sources.filter((source): source is 'face' | 'prosody' => source === 'face' || source === 'prosody')
+    : [];
+  const sourceDominants: ResponseContext['sourceDominants'] = {};
+  if (isRecord(value.source_dominants)) {
+    for (const source of ['face', 'prosody'] as const) {
+      if (source in value.source_dominants) {
+        sourceDominants[source] = emotionFrom(value.source_dominants[source], ZERO_CONTEXT_SCORES, false);
+      }
+    }
+  }
+  return {
+    dominant: emotionFrom(value.dominant, ZERO_CONTEXT_SCORES, false),
+    confidence: clamp01(value.confidence),
+    nonverbalWeight: clamp01(value.nonverbal_weight),
+    nonverbalShift: typeof value.nonverbal_shift === 'number' ? clamp01(value.nonverbal_shift) : null,
+    nonverbalDominant: emotionFrom(value.nonverbal_dominant, ZERO_CONTEXT_SCORES, false),
+    languageDominant: emotionFrom(value.language_dominant, ZERO_CONTEXT_SCORES, false),
+    effect: value.effect as ResponseContext['effect'],
+    sources,
+    sourceDominants,
+    strategy: value.strategy as ResponseContext['strategy'],
   };
 }
 
@@ -182,6 +244,7 @@ export async function converse(
       confidence: clamp01(human.confidence),
       modalities,
     },
+    responseContext: parseResponseContext(body.response_context),
     response: body.response,
     speechId: typeof body.speech_id === 'string' && body.speech_id ? body.speech_id : null,
     phrases: Array.isArray(body.phrases)

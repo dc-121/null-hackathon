@@ -4,11 +4,11 @@ import {
   SHARED_EMOTIONS,
   clearDirectEmotion,
   dominantEmotion,
+  emitFrame,
   fuse,
   normalizeEmotionScores,
   setDirectEmotion,
   store,
-  updateAttunement,
   type Emotion,
   type EmotionScores,
 } from './state/emotion.js';
@@ -97,7 +97,7 @@ const PHASE_COPY: Record<Phase, string> = {
   thinking: 'Gemma is forming a response and tracing its internal emotion vectors…',
   'awaiting-audio': 'The response is ready. Press play to hear the expressive voice.',
   speaking: 'Speaking — the right crowd follows the response phrase by phrase.',
-  holding: 'Holding the final emotional mix for a moment.',
+  holding: 'Holding the strongest measured turn tone for a moment.',
   complete: 'Response complete. The mirror is ready for another turn.',
   error: 'The last step could not complete. Nothing has been fabricated.',
 };
@@ -116,6 +116,44 @@ function phasePosition(phase: Phase): number {
 
 function confidenceLabel(value: number): string {
   return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function strongestEmotionalPhrase(
+  phrases: ConversationPhrase[]
+): { phrase: ConversationPhrase; index: number } | null {
+  let strongest: { phrase: ConversationPhrase; index: number } | null = null;
+  phrases.forEach((phrase, index) => {
+    if (!phrase.emotion || phrase.intensity <= 0) return;
+    if (!strongest || phrase.intensity > strongest.phrase.intensity) {
+      strongest = { phrase, index };
+    }
+  });
+  return strongest;
+}
+
+function showModelPhrase(phrase: ConversationPhrase | null | undefined): void {
+  if (!phrase?.emotion) {
+    clearDirectEmotion('model');
+    return;
+  }
+  // Phrase scores already preserve the all-nine mass outside the shared five.
+  // Use one authoritative categorical reading; intensity controls energy and
+  // presentation separately so it cannot attenuate the population twice.
+  setDirectEmotion('model', phrase.scores, 1);
+}
+
+function emitModelExpression(phrase: ConversationPhrase): void {
+  emitFrame({
+    source: 'gemma-vector-intensity',
+    side: 'model',
+    at: performance.now(),
+    confidence: 1,
+    channels: {
+      // crowd.ts maps these back to 0..1. No valence or effort is invented.
+      intensity: phrase.intensity * 3 - 1,
+      movement: phrase.intensity * 2,
+    },
+  });
 }
 
 function mediaRecorderMime(): string | undefined {
@@ -286,7 +324,6 @@ export function App() {
   const [prosodySignal, setProsodySignal] = useState<SignalView>(latestProsodyRef.current);
   const [userCrowd, setUserCrowd] = useState<CrowdView>(() => currentCrowdView('user'));
   const [modelCrowd, setModelCrowd] = useState<CrowdView>(() => currentCrowdView('model'));
-  const [attunement, setAttunement] = useState(0);
   const [activePhrase, setActivePhrase] = useState(-1);
   const [needsPlay, setNeedsPlay] = useState(false);
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
@@ -298,12 +335,10 @@ export function App() {
     let lastUiUpdate = 0;
     const tick = (now: number) => {
       fuse();
-      updateAttunement();
       if (now - lastUiUpdate > 140) {
         lastUiUpdate = now;
         setUserCrowd(currentCrowdView('user'));
         setModelCrowd(currentCrowdView('model'));
-        setAttunement(store.attunement);
       }
       frame = requestAnimationFrame(tick);
     };
@@ -544,15 +579,12 @@ export function App() {
       // are not counted a second time.
       setDirectEmotion('user', result.human.scores, result.human.confidence);
       setConversation(result);
+      const representative = strongestEmotionalPhrase(result.phrases);
+      showModelPhrase(representative?.phrase);
       if (result.speechId) {
         setPhase('speaking');
       } else {
         setVoiceNotice('Expressive voice is unavailable; the returned emotion trace is still shown.');
-        const finalPhrase = result.phrases.at(-1);
-        if (finalPhrase?.emotion) {
-          setDirectEmotion('model', finalPhrase.scores, Math.max(0.2, finalPhrase.intensity));
-        }
-        else clearDirectEmotion('model');
         setPhase('complete');
       }
     } catch (requestError) {
@@ -693,27 +725,40 @@ export function App() {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !conversation?.speechId) return;
+    const representative = strongestEmotionalPhrase(conversation.phrases);
     let animationFrame = 0;
     let holdTimer = 0;
+    let lastExpressionFrame = 0;
+    let playbackFailed = false;
     const sync = () => {
       const index = phraseForTime(conversation.phrases, audio.currentTime, audio.duration);
       if (index >= 0 && index !== activePhraseRef.current) {
         activePhraseRef.current = index;
         setActivePhrase(index);
+        // A weak phrase carries the strongest measured turn tone instead of
+        // flashing the crowd back to neutral. The UI labels that carry.
         const phrase = conversation.phrases[index];
-        if (phrase.emotion) {
-          setDirectEmotion('model', phrase.scores, Math.max(0.2, phrase.intensity));
-        } else {
-          clearDirectEmotion('model');
-        }
+        showModelPhrase(phrase?.emotion ? phrase : representative?.phrase);
+      }
+      const phrase = conversation.phrases[index];
+      const expressionPhrase = phrase?.emotion ? phrase : representative?.phrase;
+      const now = performance.now();
+      if (expressionPhrase && now - lastExpressionFrame >= 180) {
+        emitModelExpression(expressionPhrase);
+        lastExpressionFrame = now;
       }
       if (!audio.paused && !audio.ended) animationFrame = requestAnimationFrame(sync);
     };
     const onPlay = () => {
+      window.clearTimeout(holdTimer);
+      holdTimer = 0;
+      playbackFailed = false;
       setNeedsPlay(false);
       setPhase('speaking');
       cancelAnimationFrame(animationFrame);
-      animationFrame = requestAnimationFrame(sync);
+      // Refresh even when resuming inside the same phrase after its store TTL.
+      activePhraseRef.current = -1;
+      sync();
     };
     const onPause = () => {
       cancelAnimationFrame(animationFrame);
@@ -721,26 +766,23 @@ export function App() {
     };
     const onEnded = () => {
       cancelAnimationFrame(animationFrame);
+      showModelPhrase(representative?.phrase);
+      activePhraseRef.current = -1;
+      setActivePhrase(-1);
       setPhase('holding');
       holdTimer = window.setTimeout(() => {
-        clearDirectEmotion('model');
         setPhase('complete');
       }, 2200);
     };
     const onError = () => {
-      const finalPhrase = conversation.phrases.at(-1);
-      const hasMeasuredEmotion = Boolean(finalPhrase?.emotion);
-      if (finalPhrase?.emotion) {
-        setDirectEmotion(
-          'model',
-          finalPhrase.scores,
-          Math.max(0.2, finalPhrase.intensity)
-        );
-        activePhraseRef.current = conversation.phrases.length - 1;
-        setActivePhrase(conversation.phrases.length - 1);
-      } else {
-        clearDirectEmotion('model');
-      }
+      playbackFailed = true;
+      cancelAnimationFrame(animationFrame);
+      window.clearTimeout(holdTimer);
+      holdTimer = 0;
+      const hasMeasuredEmotion = Boolean(representative);
+      showModelPhrase(representative?.phrase);
+      activePhraseRef.current = -1;
+      setActivePhrase(-1);
       setVoiceNotice(
         hasMeasuredEmotion
           ? 'The MP3 could not be loaded. The response and measured phrase emotion remain visible.'
@@ -755,6 +797,7 @@ export function App() {
     audio.src = `/api/audio/${encodeURIComponent(conversation.speechId)}`;
     audio.load();
     void audio.play().catch(() => {
+      if (playbackFailed || audio.error) return;
       setNeedsPlay(true);
       setPhase('awaiting-audio');
     });
@@ -795,6 +838,92 @@ export function App() {
   const busy = phase === 'transcribing' || phase === 'thinking' || phase === 'requesting';
   const textLocked = busy || recording || phase === 'speaking' || phase === 'holding' || phase === 'awaiting-audio';
   const modelPhrase = activePhrase >= 0 ? conversation?.phrases[activePhrase] : null;
+  const representativeModelPhrase = useMemo(
+    () => strongestEmotionalPhrase(conversation?.phrases ?? [])?.phrase ?? null,
+    [conversation]
+  );
+  const activeEmotionalPhrase = modelPhrase?.emotion ? modelPhrase : null;
+  const displayedModelPhrase = activeEmotionalPhrase ?? (
+    modelCrowd.active ? representativeModelPhrase : null
+  );
+  const carriedTurnTone = Boolean(modelPhrase && !modelPhrase.emotion && displayedModelPhrase);
+  const modelToneScope = carriedTurnTone
+    ? 'CARRIED TURN TONE'
+    : activeEmotionalPhrase
+      ? 'ACTIVE PHRASE'
+      : 'STRONGEST PHRASE';
+  const displayedModelEmotion = displayedModelPhrase
+    ? displayedModelPhrase.emotion
+    : modelCrowd.dominant;
+  const displayedModelStrength = displayedModelPhrase
+    ? displayedModelPhrase.intensity
+    : modelCrowd.confidence;
+  const displayedModelScores = displayedModelPhrase?.scores ?? modelCrowd.scores;
+  const responseContext = conversation?.responseContext;
+  const nonverbalSourceLabel = responseContext?.sources
+    .map((source) => source === 'face' ? 'FACE' : 'VOICE')
+    .join(' + ') ?? '';
+  const sourceReadings = responseContext?.sources
+    .map((source) => {
+      const label = source === 'face' ? 'FACE' : 'VOICE';
+      return `${label} READ ${(responseContext.sourceDominants[source] ?? 'MIXED').toUpperCase()}`;
+    })
+    .join(' · ') ?? '';
+  const strategyLabel = responseContext?.strategy.replace('-', ' ').toUpperCase() ?? '';
+  const adaptationCopy = !responseContext
+    ? ''
+    : responseContext.effect === 'words-only'
+      ? `WORDS SET THE CONTEXT · RESPONSE PLAN: ${strategyLabel}`
+      : responseContext.effect === 'reinforced'
+        ? `WORDS + ${nonverbalSourceLabel} AGREED: ${(responseContext.dominant ?? 'UNCERTAIN').toUpperCase()} · RESPONSE PLAN: ${strategyLabel}`
+        : responseContext.effect === 'shifted'
+          ? `WORDS LEANED ${(responseContext.languageDominant ?? 'UNCERTAIN').toUpperCase()} · ${sourceReadings} · FUSED RESPONSE PLAN: ${strategyLabel}`
+          : responseContext.effect === 'adjusted'
+            ? `WORDS LEANED ${(responseContext.languageDominant ?? 'UNCERTAIN').toUpperCase()} · ${sourceReadings} · BALANCED RESPONSE PLAN: ${strategyLabel}`
+            : responseContext.effect === 'nonverbal-only'
+              ? `WORDS HAD NO USABLE AFFECT SIGNAL · ${sourceReadings} · RESPONSE PLAN: ${strategyLabel}`
+              : responseContext.effect === 'language-mixed'
+                ? `WORDS WERE EMOTIONALLY MIXED · ${sourceReadings} · FUSED RESPONSE PLAN: ${strategyLabel}`
+                : `${sourceReadings} · CONFLICT-AWARE RESPONSE PLAN: ${strategyLabel}`;
+  const contextDetailCopy = responseContext
+    ? [
+        `${(responseContext.dominant ?? 'uncertain').toUpperCase()} CONTEXT`,
+        `${confidenceLabel(responseContext.confidence)} FUSED SIGNAL STRENGTH`,
+        responseContext.nonverbalWeight > 0
+          ? `${confidenceLabel(responseContext.nonverbalWeight)} NONVERBAL FUSION WEIGHT`
+          : null,
+        responseContext.nonverbalShift !== null
+          && (
+            responseContext.effect === 'shifted'
+            || responseContext.effect === 'adjusted'
+            || responseContext.effect === 'language-mixed'
+          )
+          ? `${confidenceLabel(responseContext.nonverbalShift)} DISTRIBUTION SHIFT`
+          : null,
+      ].filter(Boolean).join(' · ')
+    : '';
+  const contextAxisValue = responseContext
+    ? responseContext.effect === 'shifted'
+      || responseContext.effect === 'adjusted'
+      || responseContext.effect === 'language-mixed'
+      ? responseContext.nonverbalShift ?? responseContext.nonverbalWeight
+      : responseContext.effect === 'words-only'
+        ? 0
+        : responseContext.nonverbalWeight
+    : 0;
+  const contextAxisCopy = !responseContext
+    ? conversation ? 'CONTEXT UNAVAILABLE' : 'AWAITING RESPONSE'
+    : responseContext.effect === 'words-only'
+      ? 'WORDS ONLY'
+      : responseContext.effect === 'reinforced'
+        ? 'SENSORS CONFIRMED'
+        : responseContext.effect === 'mixed'
+          ? 'SIGNALS MIXED'
+          : responseContext.effect === 'nonverbal-only'
+            ? 'SENSORS PRIMARY'
+            : responseContext.effect === 'language-mixed'
+              ? `WORDS MIXED · SHIFT ${confidenceLabel(responseContext.nonverbalShift ?? 0)}`
+            : `CONTEXT SHIFT ${confidenceLabel(responseContext.nonverbalShift ?? 0)}`;
   const languageModality = conversation?.human.modalities.language;
   const languageSignal: SignalView | null = languageModality?.scores && languageModality.confidence !== undefined
     ? {
@@ -808,7 +937,6 @@ export function App() {
       }
     : null;
   const demoActive = demoFaceActive || demoProsodyActive;
-  const displayedAttunement = userCrowd.active && modelCrowd.active ? attunement : 0;
   const phaseCopy = phase === 'ready' && !recorderAvailable
     ? 'Ready. Use the typed fallback below to begin.'
     : PHASE_COPY[phase];
@@ -818,7 +946,7 @@ export function App() {
       <header className="topbar">
         <a className="brand" href="/" aria-label="Emotion Mirror home">
           <span aria-hidden="true">◌</span>
-          <div><strong>EMOTION MIRROR</strong><small>multimodal attunement</small></div>
+          <div><strong>EMOTION MIRROR</strong><small>visible adaptive conversation</small></div>
         </a>
         <Pipeline phase={phase} />
         <div className="topbar-badges">
@@ -865,11 +993,11 @@ export function App() {
         </CrowdPane>
 
         <div className="mirror-axis" aria-hidden="true">
-          <span style={{ height: `${Math.round(displayedAttunement * 100)}%` }} />
+          <span style={{ height: `${Math.round(contextAxisValue * 100)}%` }} />
         </div>
 
         <div className="conversation-control">
-          <span className="attunement-readout">ATTUNEMENT {Math.round(displayedAttunement * 100)}%</span>
+          <span className="context-impact-readout">{contextAxisCopy}</span>
           <button
             type="button"
             className={`talk-button${recording ? ' is-recording' : ''}`}
@@ -891,20 +1019,32 @@ export function App() {
           side="model"
           label="02 · model response"
           title="What Gemma is expressing back"
-          emotion={modelCrowd.dominant}
-          confidence={modelCrowd.confidence}
-          metricLabel="vector evidence"
+          emotion={displayedModelEmotion}
+          confidence={displayedModelStrength}
+          metricLabel="expression strength"
         >
           <div className={`response-card${conversation ? ' has-response' : ''}`}>
+            {responseContext ? (
+              <div className="response-context">
+                <span>WHY IT MATTERED</span>
+                <strong>{strategyLabel}</strong>
+                <p>{adaptationCopy}</p>
+                <small>{contextDetailCopy}</small>
+                <i aria-hidden="true"><b style={{ width: `${Math.round(responseContext.nonverbalWeight * 100)}%` }} /></i>
+              </div>
+            ) : null}
             <span>GEMMA · LAYER 28</span>
             <blockquote>
               {modelPhrase?.text ?? conversation?.response ?? 'The response will appear here, then move through the crowd phrase by phrase.'}
             </blockquote>
-            {modelPhrase ? (
-              <small>{modelPhrase.direction || (modelPhrase.emotion ? `${modelPhrase.emotion} delivery` : 'no strong emotion direction')}</small>
+            {displayedModelPhrase ? (
+              <small className="phrase-evidence">
+                <span><b>{modelToneScope}</b> · {displayedModelPhrase.direction || `${displayedModelPhrase.emotion} delivery`}</span>
+                <span>{confidenceLabel(displayedModelPhrase.intensity)} strength · {confidenceLabel(displayedModelPhrase.sharedMass)} shared-five coverage</span>
+              </small>
             ) : null}
           </div>
-          <EmotionBars scores={modelCrowd.scores} active={modelCrowd.active} />
+          <EmotionBars scores={displayedModelScores} active={Boolean(displayedModelEmotion)} />
         </CrowdPane>
       </section>
 
@@ -946,7 +1086,7 @@ export function App() {
             <span key={emotion} className={`legend-${emotion}`}><i />{EMOTION_LABELS[emotion]}</span>
           ))}
         </div>
-        <p>Color = five-emotion mixture · motion = measured energy · confidence always shown</p>
+        <p>Color = five-emotion mixture · human motion = measured energy · model motion = vector intensity</p>
       </footer>
 
       {error || voiceNotice ? (
