@@ -10,6 +10,15 @@ ElevenLabs speaks the same measured delivery in sync.
 This is not a chat box with an emotion badge. Every person in both 120-character
 crowds changes color, face, gait, behavior, and particles as the mixture moves.
 
+The interactive system explainer is available beside the demo at
+[http://127.0.0.1:8766/how-it-works](http://127.0.0.1:8766/how-it-works). It walks
+through sensing, uncertainty-aware fusion, Gemma prompt conditioning, the
+layer-28 return trace, privacy boundaries, and the claims the project does not
+make. It also documents the next controlled experiment: replacing emotion names
+and scores in the prompt with a fused activation-steering vector injected into
+Gemma's layer-28 residual stream. That path is explicitly labeled experimental
+and is not presented as part of the current live demo.
+
 ## The 90-second judge proof
 
 Open [http://127.0.0.1:8766/?demo=1](http://127.0.0.1:8766/?demo=1) and choose

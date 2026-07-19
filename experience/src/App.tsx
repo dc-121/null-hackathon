@@ -1335,6 +1335,7 @@ export function App() {
           <strong>NULL MIRROR</strong>
         </a>
         <div className="stage-badges">
+          <a className="explainer-link" href="/how-it-works">HOW IT WORKS</a>
           {demoRequested ? (
             <span className={`demo-badge${demoActive || judgeProofActive ? ' is-active' : ''}`}>
               {proofStage === 'baseline'

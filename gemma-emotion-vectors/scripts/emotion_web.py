@@ -294,6 +294,11 @@ def index() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
 
 
+@app.get("/how-it-works")
+def how_it_works() -> FileResponse:
+    return FileResponse(WEB_DIR / "index.html")
+
+
 @app.get("/api/config")
 def config() -> dict:
     return {

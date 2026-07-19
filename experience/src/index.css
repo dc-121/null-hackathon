@@ -1750,6 +1750,28 @@ button {
 .stage-badges {
   top: 17px;
   right: 20px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.explainer-link {
+  padding: 7px 10px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.56rem;
+  letter-spacing: 0.1em;
+  text-decoration: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 8px 20px rgba(35, 39, 46, 0.06);
+  backdrop-filter: blur(12px);
+}
+
+.explainer-link:hover {
+  color: var(--fg);
+  border-color: var(--line-bright);
 }
 
 .stage-status {
