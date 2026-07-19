@@ -44,6 +44,36 @@ displayed response token and helps predict what follows.
 `--top-k` controls display only. The script calculates all nine scores at every
 position.
 
+## Selectable conversation conditioning
+
+The conversation UI exposes two backend paths through a compact **Prompt /
+Vector** toggle:
+
+- **Prompt** preserves the original behavior: fused scores, reliable modality
+  summaries, and a conservative response strategy are written into Gemma's
+  instructions.
+- **Vector** keeps emotion names, scores, modality summaries, and strategy
+  labels out of the prompt. It combines the five shared layer-28 directions as
+  `confidence * sum((score_i - 0.2) * vector_i)`, normalizes that direction,
+  and adds a norm-relative residual edit to every token overlapping the user's
+  final sentence.
+
+Subtracting `0.2` makes a uniform five-way distribution produce no edit. The
+fused confidence and distance from that uniform baseline reduce the applied
+strength when evidence is weak or conflicting. The maximum configured edit is
+20% of each selected token's residual norm; the effective ratio is usually
+lower because it is multiplied by the blended direction's magnitude.
+
+The intervention happens only during the initial prompt pass at layer 28. It is
+not applied continuously to generated tokens, which reduces the risk of making
+Gemma imitate an observed emotion. The response is still replayed afterward for
+the normal nine-direction trace.
+
+This is a real activation intervention but remains experimental: the published
+vectors were derived as diagnostic directions, not validated causal controls.
+The API therefore returns the selected mode, layer, target-token count,
+direction magnitude, and applied residual ratio for each conversation.
+
 ## What a score means
 
 A value such as `desperate=+0.0970` means that the current layer-28 activation

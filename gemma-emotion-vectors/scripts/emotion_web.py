@@ -38,13 +38,16 @@ try:
         SHARED_EMOTIONS,
         add_phrase_timings,
         explain_response_context,
+        final_sentence,
         fuse_modalities,
         response_prompt,
         score_language_emotion,
         shared_phrase_plan,
         validate_input_scores,
+        vector_response_prompt,
     )
     from emotion_trace import (
+        ACTIVATION_STEERING_RESIDUAL_RATIO,
         DEFAULT_OUTPUT_FORMAT,
         DEFAULT_TTS_MODEL,
         DEFAULT_VOICE_ID,
@@ -56,6 +59,7 @@ try:
         SAFE_SPEECH_TAGS,
         SpeechClient,
         analyze_prompt,
+        build_activation_steering,
         build_tagged_speech,
         load_runtime,
     )
@@ -70,13 +74,16 @@ except ModuleNotFoundError:  # imported as scripts.emotion_web in tests
         SHARED_EMOTIONS,
         add_phrase_timings,
         explain_response_context,
+        final_sentence,
         fuse_modalities,
         response_prompt,
         score_language_emotion,
         shared_phrase_plan,
         validate_input_scores,
+        vector_response_prompt,
     )
     from scripts.emotion_trace import (
+        ACTIVATION_STEERING_RESIDUAL_RATIO,
         DEFAULT_OUTPUT_FORMAT,
         DEFAULT_TTS_MODEL,
         DEFAULT_VOICE_ID,
@@ -88,6 +95,7 @@ except ModuleNotFoundError:  # imported as scripts.emotion_web in tests
         SAFE_SPEECH_TAGS,
         SpeechClient,
         analyze_prompt,
+        build_activation_steering,
         build_tagged_speech,
         load_runtime,
     )
@@ -113,7 +121,7 @@ ALLOWED_AUDIO_TYPES = {
     "video/webm",
 }
 SharedEmotion = Literal["happy", "sad", "angry", "afraid", "surprised"]
-API_VERSION = "2026-07-18.1"
+API_VERSION = "2026-07-19.1"
 
 
 class AnalyzeRequest(BaseModel):
@@ -128,7 +136,7 @@ class AnalyzeRequest(BaseModel):
 class ConversationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    api_version: Literal["2026-07-18.1"]
+    api_version: Literal["2026-07-19.1"]
     transcript: str | None = Field(default=None, max_length=4_000)
     audio_base64: str | None = Field(default=None, max_length=36_000_000)
     audio_content_type: str | None = Field(default=None, max_length=80)
@@ -139,6 +147,7 @@ class ConversationRequest(BaseModel):
     # Counterfactual proof runs still need the real response/vector trace, but
     # only the adapted side should spend latency and quota on ElevenLabs audio.
     synthesize_speech: bool = True
+    conditioning_mode: Literal["prompt", "vector"] = "prompt"
 
     @field_validator("face_scores", "prosody_scores")
     @classmethod
@@ -253,11 +262,22 @@ class ResponseContextResponse(BaseModel):
     ]
 
 
+class ConditioningResponse(BaseModel):
+    mode: Literal["prompt", "vector"]
+    layer: int | None
+    target: Literal["text-prompt", "final-user-sentence"]
+    target_tokens: int = Field(ge=0)
+    direction_magnitude: float = Field(ge=0)
+    max_residual_ratio: float = Field(ge=0, le=1)
+    applied_residual_ratio: float = Field(ge=0, le=1)
+
+
 class ConversationResponse(BaseModel):
-    api_version: Literal["2026-07-18.1"]
+    api_version: Literal["2026-07-19.1"]
     transcript: str
     human: HumanResponse
     response_context: ResponseContextResponse
+    conditioning: ConditioningResponse
     response: str
     speech_id: str | None
     phrases: list[PhraseResponse]
@@ -307,6 +327,12 @@ def config() -> dict:
         "layer": 28,
         "emotions": runtime.names,
         "shared_emotions": SHARED_EMOTIONS,
+        "conditioning": {
+            "modes": ["prompt", "vector"],
+            "vector_layer": 28,
+            "vector_target": "final-user-sentence",
+            "max_residual_ratio": ACTIVATION_STEERING_RESIDUAL_RATIO,
+        },
         "raw_tags": RAW_INTENSITY_TAGS,
         "raw_extreme_tags": RAW_EXTREME_TAGS,
         "safe_tags": SAFE_SPEECH_TAGS,
@@ -495,8 +521,21 @@ def conversation(request: ConversationRequest) -> dict:
             )
         fused = fuse_modalities(modalities)
         response_context = explain_response_context(fused)
+        activation_steering = None
+        if request.conditioning_mode == "vector":
+            activation_steering = build_activation_steering(
+                fused.scores,
+                fused.confidence,
+                names=runtime.names,
+                vectors=runtime.vectors,
+                target_text=final_sentence(transcript),
+            )
         result = analyze_prompt(
-            response_prompt(transcript, fused),
+            (
+                vector_response_prompt(transcript)
+                if request.conditioning_mode == "vector"
+                else response_prompt(transcript, fused)
+            ),
             model=runtime.model,
             tokenizer=runtime.tokenizer,
             names=runtime.names,
@@ -504,6 +543,7 @@ def conversation(request: ConversationRequest) -> dict:
             neutral_mean=runtime.neutral_mean,
             neutral_std=runtime.neutral_std,
             max_new_tokens=96,
+            activation_steering=activation_steering,
         )
         tagged_text, phrases, text_spans = shared_phrase_plan(
             result,
@@ -545,11 +585,45 @@ def conversation(request: ConversationRequest) -> dict:
         runtime.diagnostics[diagnostic_id] = {
             "language": language_diagnostics,
             "response_context": response_context,
+            "conditioning_mode": request.conditioning_mode,
             "response_baseline": response_baseline,
             "response_trace": response_trace,
         }
         while len(runtime.diagnostics) > 20:
             runtime.diagnostics.popitem(last=False)
+
+    steering_trace = result.steering
+    conditioning = {
+        "mode": request.conditioning_mode,
+        "layer": 28 if request.conditioning_mode == "vector" else None,
+        "target": (
+            "final-user-sentence"
+            if request.conditioning_mode == "vector"
+            else "text-prompt"
+        ),
+        "target_tokens": steering_trace.target_tokens if steering_trace else 0,
+        "direction_magnitude": (
+            steering_trace.direction_magnitude
+            if steering_trace
+            else (
+                activation_steering.direction_magnitude
+                if activation_steering
+                else 0.0
+            )
+        ),
+        "max_residual_ratio": (
+            steering_trace.max_residual_ratio
+            if steering_trace
+            else (
+                activation_steering.residual_ratio
+                if activation_steering
+                else 0.0
+            )
+        ),
+        "applied_residual_ratio": (
+            steering_trace.applied_residual_ratio if steering_trace else 0.0
+        ),
+    }
 
     return {
         "api_version": API_VERSION,
@@ -561,6 +635,7 @@ def conversation(request: ConversationRequest) -> dict:
             "modalities": fused.modalities,
         },
         "response_context": response_context,
+        "conditioning": conditioning,
         "response": result.response,
         "speech_id": speech_id,
         "phrases": phrases,

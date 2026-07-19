@@ -12,12 +12,11 @@ crowds changes color, face, gait, behavior, and particles as the mixture moves.
 
 The interactive system explainer is available beside the demo at
 [http://127.0.0.1:8766/how-it-works](http://127.0.0.1:8766/how-it-works). It walks
-through sensing, uncertainty-aware fusion, Gemma prompt conditioning, the
+through sensing, uncertainty-aware fusion, selectable Gemma conditioning, the
 layer-28 return trace, privacy boundaries, and the claims the project does not
-make. It also documents the next controlled experiment: replacing emotion names
-and scores in the prompt with a fused activation-steering vector injected into
-Gemma's layer-28 residual stream. That path is explicitly labeled experimental
-and is not presented as part of the current live demo.
+make. The live affect-channel toggle compares explicit prompt context with an
+experimental fused activation-steering vector injected into Gemma's layer-28
+residual stream over the final user sentence.
 
 ## The 90-second judge proof
 
@@ -54,8 +53,12 @@ flowchart LR
     Prosody --> Fusion
     Words --> Fusion
     Fusion --> HumanCrowd["Human crowd"]
-    Fusion --> Context["Visible response context + adaptation strategy"]
-    Fusion --> Reply["Emotion-attuned Gemma reply"]
+    Fusion --> Context["Visible response context"]
+    Fusion --> Mode["Prompt / vector toggle"]
+    Mode --> Prompt["Explicit affect prompt"]
+    Mode --> Vector["Layer-28 final-sentence edit"]
+    Prompt --> Reply["Emotion-attuned Gemma reply"]
+    Vector --> Reply
     Context --> Reply
     Reply --> Trace["Layer-28 phrase trace"]
     Trace --> ModelCrowd["Model crowd"]
@@ -78,10 +81,12 @@ excluded mass lowers confidence, so uncertainty remains visible.
 
 ## Why the sensors change the conversation
 
-The face and voice signals are not decorative inputs. The backend sends Gemma
-the fused affect plus a modality-by-modality summary, explicitly instructing it
-to use reliable nonverbal evidence in proportion to its confidence when the
-words are ambiguous. The current transcript-vector scorer is capped at 35%
+The face and voice signals are not decorative inputs. In **Prompt** mode, the
+backend sends Gemma the fused affect plus a modality-by-modality summary. In
+experimental **Vector** mode, it centers the five scores around 20%, scales the
+weighted direction by fused confidence, and adds it to the final user sentence
+at layer 28 without placing emotion labels or scores in the prompt. The current
+transcript-vector scorer is capped at 35%
 confidence until its five-label calibration improves, so it cannot overpower a
 strong camera observation by itself. Negligible sensor readings are omitted.
 
@@ -98,7 +103,8 @@ Every response returns an audit-friendly context object. The right pane shows:
 - how much fusion weight came from face and voice;
 - whether nonverbal evidence reinforced, adjusted, shifted, or conflicted with
   the words-only reading; and
-- the response strategy that Gemma was explicitly asked to express in content.
+- the response strategy selected in Prompt mode, or the exact layer/token edit
+  applied in Vector mode.
 
 The built-in counterfactual makes this conditioning path inspectable without
 asking the audience to trust that it happened. Its words-only control skips TTS
@@ -136,6 +142,8 @@ to the warm backend.
 
 - Press **Start camera + microphone** to opt into live sensors.
 - Press **Speak to the mirror**, speak naturally, then stop the recording.
+- Use the compact **Prompt / Vector** toggle above the text field to choose the
+  affect channel for typed, recorded, and counterfactual turns.
 - If camera or microphone access is unavailable, use the typed fallback.
 - For repeatable stage rehearsal, open `/?demo=1`, choose **Open judge proof**,
   select one of the five emotion presets, and press **Prove it**. The injected
@@ -207,10 +215,11 @@ speech loop and adapted proof voice do not.
 make test
 ```
 
-The suite covers taxonomy projection, uncertainty-aware fusion, weak phrase
-evidence, HSEmotion class mapping, request validation, Scribe multipart calls,
-timestamped ElevenLabs speech, the conversation contract, and a production
-TypeScript/Vite build.
+The suite covers taxonomy projection, uncertainty-aware fusion, centered
+activation steering, targeted residual edits, weak phrase evidence, HSEmotion
+class mapping, request validation, Scribe multipart calls, timestamped
+ElevenLabs speech, the conversation contract, and a production TypeScript/Vite
+build.
 
 ## Repository map
 

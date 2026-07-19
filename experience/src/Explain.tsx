@@ -78,8 +78,8 @@ const PIPELINE = [
   {
     number: '04',
     title: 'Condition',
-    subtitle: 'Context becomes language',
-    copy: 'The fused distribution, reliable modality summaries and a conservative conversation strategy are written into Gemma’s prompt. There is no hidden-state emotion injection in the current build.',
+    subtitle: 'Prompt or layer-28 vector',
+    copy: 'A small frontend toggle selects the conditioning path. Prompt mode writes transparent affect context for Gemma. Vector mode removes emotion text and injects the confidence-weighted direction into the final user sentence at layer 28.',
   },
   {
     number: '05',
@@ -225,10 +225,10 @@ export function Explain() {
       <section className="conditioning-section" id="conditioning">
         <div className="section-heading section-heading--light">
           <p className="explain-kicker">THE CRUCIAL HANDOFF</p>
-          <h2>Emotion reaches Gemma as explicit context.</h2>
+          <h2>Emotion reaches Gemma through a selectable channel.</h2>
           <p>
-            This walkthrough uses illustrative values, but mirrors the real request shape and
-            prompt-conditioning path in the running demo.
+            The live toggle compares explicit prompt context with a centered, confidence-scaled
+            layer-28 residual edit using the same fused distribution.
           </p>
         </div>
 
@@ -317,12 +317,11 @@ export function Explain() {
               ))}
             </div>
             <div className="prompt-preview">
-              <span>PROMPT CONTEXT</span>
+              <span>SELECTABLE CONDITIONING</span>
               <p>
-                You are the emotionally attuned half of a live conversation. Treat the affect
-                estimate as uncertain context. <mark>Strategy: {strategy}.</mark>{' '}
-                {withContext ? story.firstMove : 'Open with a tentative observation or question.'}
-                {' '}Do not mention sensors, scores, or emotion labels.
+                <mark>Prompt:</mark> write the uncertain context and {strategy.toLowerCase()} plan
+                into Gemma’s instructions. <mark>Vector:</mark> keep the prompt free of emotion
+                names and scores, then add the fused direction to the final sentence at layer 28.
               </p>
             </div>
           </article>
@@ -336,12 +335,12 @@ export function Explain() {
       <section className="steering-section" id="steering">
         <div className="section-heading">
           <div>
-            <p className="explain-kicker">NEXT EXPERIMENT · NOT IN THE LIVE DEMO YET</p>
+            <p className="explain-kicker">LIVE EXPERIMENT · SELECTABLE IN THE DEMO</p>
             <h2>Give Gemma an affect vector—not English about one.</h2>
           </div>
           <p>
-            Activation steering would keep emotion as a hidden model channel. Instead of spelling
-            scores and labels out in the prompt, we would add one fused direction inside Gemma at
+            Activation steering keeps emotion as a hidden model channel. Instead of spelling
+            scores and labels out in the prompt, vector mode adds one fused direction inside Gemma at
             the exact layer where those directions were measured.
           </p>
         </div>
@@ -349,7 +348,7 @@ export function Explain() {
         <div className="steering-comparison">
           <article className="steering-now">
             <header>
-              <span>CURRENT PATH</span>
+              <span>PROMPT MODE</span>
               <strong>Prompt conditioning</strong>
             </header>
             <div className="steering-flow" aria-label="Current emotion conditioning path">
@@ -367,7 +366,7 @@ export function Explain() {
 
           <article className="steering-next">
             <header>
-              <span>PROPOSED PATH</span>
+              <span>VECTOR MODE · EXPERIMENTAL</span>
               <strong>Layer-28 activation steering</strong>
             </header>
             <div className="steering-flow" aria-label="Proposed activation steering path">
@@ -440,7 +439,7 @@ export function Explain() {
             <span>THE POLICY GAP</span>
             <strong>“Angry” does not mean “de-escalate.”</strong>
             <p>
-              A diagnostic direction communicates affect, not the safe action to take. The proposed
+              A diagnostic direction communicates affect, not the safe action to take. Vector mode
               path keeps a short generic conversational and safety policy while removing emotion
               names, percentages and strategy labels from the text prompt.
             </p>
@@ -451,20 +450,20 @@ export function Explain() {
           <header>
             <div>
               <p className="explain-kicker">THE CONTROLLED COMPARISON</p>
-              <h3>Same transcript. Same fused signal. Three paths.</h3>
+              <h3>Same transcript. Two live paths. One follow-up.</h3>
             </div>
             <p>We sweep steering strength and compare response strategy, specificity, safety and phrase-level vector traces.</p>
           </header>
           <ol>
             <li>
               <span>01</span>
-              <div><strong>Emotion as prompt text</strong><p>The current, explicit baseline.</p></div>
+              <div><strong>Emotion as prompt text</strong><p>The live, explicit baseline.</p></div>
               <small>CONTROL</small>
             </li>
             <li className="is-preferred">
               <span>02</span>
-              <div><strong>Vector on the final user sentence</strong><p>The clean first activation-steering experiment.</p></div>
-              <small>START HERE</small>
+              <div><strong>Vector on the final user sentence</strong><p>The live activation-steering toggle.</p></div>
+              <small>LIVE</small>
             </li>
             <li>
               <span>03</span>
@@ -474,8 +473,8 @@ export function Explain() {
           </ol>
           <p className="steering-caveat">
             These published vectors were built as diagnostic emotion directions, not validated
-            steering controls. The experiment must earn the claim through measured comparisons; the
-            site does not present steering as a working live feature yet.
+            steering controls. The toggle performs a real residual-stream intervention, but its
+            behavioral reliability still has to be earned through measured comparisons.
           </p>
         </div>
       </section>
@@ -536,8 +535,8 @@ export function Explain() {
           </article>
           <article>
             <span>GEMMA INPUT</span>
-            <strong>Prompt conditioning—not steering</strong>
-            <p>The live build writes affect context into natural-language instructions. Activation steering is the clearly separated next experiment above.</p>
+            <strong>Prompt or experimental steering</strong>
+            <p>The live toggle either writes affect context into instructions or injects a centered, confidence-scaled direction into final-sentence activations at layer 28.</p>
           </article>
           <article>
             <span>GEMMA OUTPUT</span>

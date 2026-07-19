@@ -6,7 +6,9 @@ import {
   type EmotionScores,
 } from '../state/emotion.js';
 
-export const API_VERSION = '2026-07-18.1' as const;
+export const API_VERSION = '2026-07-19.1' as const;
+
+export type ConditioningMode = 'prompt' | 'vector';
 
 export interface FaceAnalysis {
   detected: boolean;
@@ -58,6 +60,15 @@ export interface ConversationResponse {
     modalities: Record<string, ConversationModality>;
   };
   responseContext: ResponseContext | null;
+  conditioning: {
+    mode: ConditioningMode;
+    layer: number | null;
+    target: 'text-prompt' | 'final-user-sentence';
+    targetTokens: number;
+    directionMagnitude: number;
+    maxResidualRatio: number;
+    appliedResidualRatio: number;
+  };
   response: string;
   speechId: string | null;
   phrases: ConversationPhrase[];
@@ -73,6 +84,7 @@ export interface ConversationRequest {
   prosody_scores?: EmotionScores;
   prosody_confidence?: number;
   synthesize_speech?: boolean;
+  conditioning_mode?: ConditioningMode;
 }
 
 export class ApiError extends Error {
@@ -252,6 +264,14 @@ export async function converse(
   }
 
   const human = isRecord(body.human) ? body.human : {};
+  const conditioning = isRecord(body.conditioning) ? body.conditioning : null;
+  if (
+    !conditioning
+    || (conditioning.mode !== 'prompt' && conditioning.mode !== 'vector')
+    || (conditioning.target !== 'text-prompt' && conditioning.target !== 'final-user-sentence')
+  ) {
+    throw new ApiError('Conversation service returned invalid conditioning metadata.', response.status);
+  }
   const humanScores = scoresFrom(human.scores);
   const modalities: Record<string, ConversationModality> = {};
   if (isRecord(human.modalities)) {
@@ -281,6 +301,15 @@ export async function converse(
       modalities,
     },
     responseContext: parseResponseContext(body.response_context),
+    conditioning: {
+      mode: conditioning.mode,
+      layer: typeof conditioning.layer === 'number' ? conditioning.layer : null,
+      target: conditioning.target,
+      targetTokens: Math.max(0, finite(conditioning.target_tokens)),
+      directionMagnitude: Math.max(0, finite(conditioning.direction_magnitude)),
+      maxResidualRatio: clamp01(conditioning.max_residual_ratio),
+      appliedResidualRatio: clamp01(conditioning.applied_residual_ratio),
+    },
     response: body.response,
     speechId: typeof body.speech_id === 'string' && body.speech_id ? body.speech_id : null,
     phrases: Array.isArray(body.phrases)

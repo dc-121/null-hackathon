@@ -13,13 +13,22 @@ from scripts.emotion_api import (
     add_phrase_timings,
     canonical_scores,
     explain_response_context,
+    final_sentence,
     fuse_modalities,
     hsemotion_score_mapping,
     response_prompt,
     shared_distribution,
     shared_phrase_plan,
+    vector_response_prompt,
 )
-from scripts.emotion_trace import SpeechClient, TraceResult
+from scripts.emotion_trace import (
+    ActivationSteering,
+    SpeechClient,
+    TraceResult,
+    apply_activation_steering,
+    build_activation_steering,
+    target_token_positions,
+)
 from scripts import emotion_web
 from scripts.emotion_web import (
     API_VERSION,
@@ -107,6 +116,77 @@ class TaxonomyTests(unittest.TestCase):
             ]
         )
         self.assertIsNotNone(fused.dominant)
+
+
+class ActivationSteeringTests(unittest.TestCase):
+    names = ["happy", "sad", "angry", "afraid", "surprised"]
+
+    def test_uniform_distribution_produces_no_activation_edit(self) -> None:
+        steering = build_activation_steering(
+            {name: 0.2 for name in self.names},
+            0.9,
+            names=self.names,
+            vectors=torch.eye(len(self.names)),
+            target_text="Final sentence.",
+        )
+
+        self.assertAlmostEqual(steering.direction_magnitude, 0.0)
+        self.assertTrue(torch.equal(steering.direction, torch.zeros(5)))
+        self.assertTrue(all(weight == 0 for weight in steering.centered_weights.values()))
+
+    def test_weighted_direction_is_centered_and_confidence_scaled(self) -> None:
+        scores = {name: 0.0 for name in self.names}
+        scores["happy"] = 1.0
+        steering = build_activation_steering(
+            scores,
+            0.5,
+            names=self.names,
+            vectors=torch.eye(len(self.names)),
+            target_text="Final sentence.",
+        )
+
+        self.assertAlmostEqual(steering.centered_weights["happy"], 0.4)
+        self.assertAlmostEqual(steering.centered_weights["sad"], -0.1)
+        self.assertAlmostEqual(steering.direction_magnitude, 0.2**0.5)
+        self.assertAlmostEqual(float(torch.linalg.vector_norm(steering.direction)), 1.0)
+
+    def test_residual_edit_only_changes_selected_tokens(self) -> None:
+        hidden = torch.tensor(
+            [[[3.0, 4.0], [6.0, 8.0], [5.0, 12.0]]],
+            dtype=torch.float32,
+        )
+        steering = ActivationSteering(
+            direction=torch.tensor([1.0, 0.0]),
+            direction_magnitude=0.5,
+            target_text="last",
+            centered_weights={"happy": 0.5},
+            residual_ratio=0.2,
+        )
+
+        updated, applied_ratio = apply_activation_steering(hidden, [1], steering)
+
+        self.assertAlmostEqual(applied_ratio, 0.1)
+        self.assertTrue(torch.equal(updated[:, 0], hidden[:, 0]))
+        self.assertTrue(torch.equal(updated[:, 2], hidden[:, 2]))
+        self.assertTrue(torch.allclose(updated[0, 1], torch.tensor([7.0, 8.0])))
+
+    def test_target_positions_use_final_matching_sentence(self) -> None:
+        rendered = "prefix Final sentence. middle Final sentence. suffix"
+        offsets = [(0, 6), (7, 12), (13, 22), (23, 29), (30, 35), (36, 45), (46, 52)]
+
+        self.assertEqual(
+            target_token_positions(rendered, "Final sentence.", offsets),
+            [4, 5],
+        )
+
+    def test_vector_prompt_contains_transcript_but_no_affect_payload(self) -> None:
+        transcript = "The first part is done. The final part is here."
+        prompt = vector_response_prompt(transcript)
+
+        self.assertTrue(prompt.endswith(transcript))
+        self.assertEqual(final_sentence(transcript), "The final part is here.")
+        for forbidden in (*SHARED_EMOTIONS, "face:", "prosody:", "%", "strategy:"):
+            self.assertNotIn(forbidden, prompt.lower())
 
 
 class FusionTests(unittest.TestCase):
@@ -647,6 +727,31 @@ class RequestValidationTests(unittest.TestCase):
                 face_confidence=0.8,
             )
 
+    def test_conditioning_mode_accepts_prompt_or_vector_only(self) -> None:
+        self.assertEqual(
+            ConversationRequest(
+                api_version=API_VERSION,
+                transcript="hello",
+            ).conditioning_mode,
+            "prompt",
+        )
+        self.assertEqual(
+            ConversationRequest(
+                api_version=API_VERSION,
+                transcript="hello",
+                conditioning_mode="vector",
+            ).conditioning_mode,
+            "vector",
+        )
+        with self.assertRaises(ValidationError):
+            ConversationRequest.model_validate(
+                {
+                    "api_version": API_VERSION,
+                    "transcript": "hello",
+                    "conditioning_mode": "embedding",
+                }
+            )
+
     def test_request_contract_rejects_unknown_fields_and_version_mismatch(self) -> None:
         with self.assertRaises(ValidationError):
             ConversationRequest.model_validate(
@@ -666,6 +771,10 @@ class RequestValidationTests(unittest.TestCase):
 
     def test_api_version_is_visible_in_config_and_request_contract(self) -> None:
         self.assertEqual(emotion_web.config()["api_version"], API_VERSION)
+        self.assertEqual(
+            emotion_web.config()["conditioning"]["vector_layer"],
+            28,
+        )
         with self.assertRaises(ValidationError):
             ConversationRequest(transcript="hello")
         self.assertEqual(
@@ -839,7 +948,11 @@ class ConversationContractTests(unittest.TestCase):
                     "score_language_emotion",
                     return_value=(scores, 0.8, {"happy": {"raw": 0.2, "z": 1.0}}),
                 ),
-                patch.object(emotion_web, "analyze_prompt", return_value=result),
+                patch.object(
+                    emotion_web,
+                    "analyze_prompt",
+                    return_value=result,
+                ) as analyze_prompt,
                 patch.object(
                     emotion_web,
                     "shared_phrase_plan",
@@ -867,7 +980,18 @@ class ConversationContractTests(unittest.TestCase):
                     )
                 )
 
+                vector_response = emotion_web.conversation(
+                    ConversationRequest(
+                        api_version=API_VERSION,
+                        transcript="Today is looking up. This is the final sentence.",
+                        conditioning_mode="vector",
+                        synthesize_speech=False,
+                    )
+                )
+                vector_call = analyze_prompt.call_args
+
             validated = ConversationResponse.model_validate(response)
+            vector_validated = ConversationResponse.model_validate(vector_response)
             self.assertEqual(validated.api_version, API_VERSION)
             self.assertIsNotNone(validated.speech_id)
             self.assertEqual(validated.human.dominant, "happy")
@@ -877,6 +1001,18 @@ class ConversationContractTests(unittest.TestCase):
             )
             self.assertEqual(validated.response_context.effect, "words-only")
             self.assertEqual(validated.response_context.nonverbal_weight, 0)
+            self.assertEqual(validated.conditioning.mode, "prompt")
+            self.assertEqual(validated.conditioning.target, "text-prompt")
+            self.assertEqual(vector_validated.conditioning.mode, "vector")
+            self.assertEqual(
+                vector_validated.conditioning.target,
+                "final-user-sentence",
+            )
+            self.assertNotIn("happy", vector_call.args[0].lower())
+            self.assertNotIn("strategy:", vector_call.args[0].lower())
+            steering = vector_call.kwargs["activation_steering"]
+            self.assertIsInstance(steering, ActivationSteering)
+            self.assertEqual(steering.target_text, "This is the final sentence.")
             self.assertEqual(validated.phrases[0].emotion, "happy")
             self.assertIsNotNone(validated.phrases[0].start_seconds)
             self.assertIsNotNone(validated.phrases[0].end_seconds)

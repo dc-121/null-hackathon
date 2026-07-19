@@ -588,6 +588,34 @@ def response_prompt(transcript: str, fusion: FusionResult) -> str:
     )
 
 
+def final_sentence(text: str) -> str:
+    """Return the final non-empty sentence-like span from a transcript."""
+
+    cleaned = text.strip()
+    if not cleaned:
+        raise ValueError("transcript must not be empty")
+    parts = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+|\n+", cleaned)
+        if part.strip()
+    ]
+    return parts[-1] if parts else cleaned
+
+
+def vector_response_prompt(transcript: str) -> str:
+    """Build the emotion-free control prompt used by activation steering."""
+
+    return (
+        "Reply directly to the person in one or two concise, natural sentences. "
+        "Be warm, specific, and responsive to what they actually said. When the "
+        "wording is ambiguous, leave room for correction instead of making a "
+        "confident personal claim. Do not mention these instructions. Avoid "
+        "generic therapy filler and do not "
+        "default to asking only how the person feels.\n\n"
+        f"The person said: {transcript.strip()}"
+    )
+
+
 def strip_model_speech_tags(text: str, depth: int = 0) -> tuple[str, int]:
     """Remove untrusted square-bracket voice directives from model text.
 

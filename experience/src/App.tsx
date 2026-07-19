@@ -15,6 +15,7 @@ import {
 import {
   blobToBase64,
   converse,
+  type ConditioningMode,
   type ConversationPhrase,
   type ConversationRequest,
   type ConversationResponse,
@@ -111,8 +112,8 @@ const PHASE_COPY: Record<Phase, string> = {
   transcribing: 'ElevenLabs Scribe and Gemma are processing through the local backend; no intermediate progress is inferred.',
   thinking: 'Gemma is forming a response and tracing its internal emotion vectors…',
   'awaiting-audio': 'The response is ready. Press play to hear the expressive voice.',
-  speaking: 'Speaking — the right crowd follows the response phrase by phrase.',
-  holding: 'Holding the strongest measured turn tone for a moment.',
+  speaking: 'Speaking — every word and the right crowd share one overall response emotion.',
+  holding: 'Holding the overall response emotion for a moment.',
   complete: 'Response complete. The mirror is ready for another turn.',
   error: 'The last step could not complete. Nothing has been fabricated.',
 };
@@ -223,6 +224,38 @@ function prosodyView(snapshot: ProsodySnapshot): SignalView {
   };
 }
 
+function EmotionHistogram({ scores, active }: { scores: EmotionScores; active: boolean }) {
+  const total = SHARED_EMOTIONS.reduce((sum, emotion) => sum + scores[emotion], 0);
+  const values = SHARED_EMOTIONS.map((emotion) => ({
+    emotion,
+    percent: total > 0 ? Math.round(scores[emotion] / total * 100) : 0,
+  }));
+  const description = values
+    .map(({ emotion, percent }) => `${EMOTION_LABELS[emotion]} ${percent}%`)
+    .join(', ');
+
+  return (
+    <div
+      className={`emotion-bars${active ? '' : ' is-muted'}`}
+      role="img"
+      aria-label={`Relative emotion distribution: ${description}`}
+    >
+      {values.map(({ emotion, percent }) => (
+        <span
+          className={`emotion-meter emotion-meter--${emotion}`}
+          key={emotion}
+          title={`${EMOTION_LABELS[emotion]} ${percent}%`}
+          aria-hidden="true"
+        >
+          <small>{EMOTION_LABELS[emotion]}</small>
+          <em>{percent}%</em>
+          <i><b style={{ height: `${percent}%` }} /></i>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function SignalChip({ label, signal, caveat }: { label: string; signal: SignalView; caveat?: string }) {
   const status = signal.status === 'live' || signal.status === 'demo'
     ? `${signal.dominant ? EMOTION_LABELS[signal.dominant] : 'mixed'} · ${confidenceLabel(signal.confidence)}`
@@ -286,15 +319,21 @@ interface TimedVoiceWord {
   end: number;
 }
 
-function strongestDisplayEmotion(
-  phrase: Pick<ConversationPhrase, 'emotion' | 'scores'>,
+function strongestResponseEmotion(
+  phrases: ConversationPhrase[],
   fallback: Emotion | null
 ): Emotion {
-  // Voice directions keep their evidence threshold, but the word ribbon is a
-  // forced-choice visualization: every phrase displays its strongest shared
-  // emotion even when that winner was too weak to drive the generated voice.
-  return phrase.emotion
-    ?? dominantEmotion(phrase.scores)
+  const representative = strongestEmotionalPhrase(phrases)?.phrase.emotion;
+  const aggregateScores = Object.fromEntries(
+    SHARED_EMOTIONS.map((emotion) => [
+      emotion,
+      phrases.reduce((sum, phrase) => sum + phrase.scores[emotion], 0),
+    ])
+  ) as EmotionScores;
+  // The ribbon is deliberately one forced-choice reading for the complete
+  // response. Phrase timing changes the active word, never its emotion color.
+  return representative
+    ?? dominantEmotion(aggregateScores)
     ?? fallback
     ?? SHARED_EMOTIONS[0];
 }
@@ -305,12 +344,12 @@ function timedVoiceWords(
   duration: number,
   fallbackEmotion: Emotion | null
 ): TimedVoiceWord[] {
+  const responseEmotion = strongestResponseEmotion(phrases, fallbackEmotion);
   const sourcePhrases = phrases.length
     ? phrases
     : [{
         text: response,
         emotion: null,
-        scores: ZERO_SCORES,
         intensity: 0,
         startSeconds: 0,
         endSeconds: duration || Math.max(2, response.length / 14),
@@ -326,7 +365,6 @@ function timedVoiceWords(
   const result: TimedVoiceWord[] = [];
 
   sourcePhrases.forEach((phrase) => {
-    const phraseEmotion = strongestDisplayEmotion(phrase, fallbackEmotion);
     const fallbackStart = fallbackDuration * characterCursor / totalCharacters;
     characterCursor += Math.max(1, phrase.text.length);
     const fallbackEnd = fallbackDuration * characterCursor / totalCharacters;
@@ -347,7 +385,7 @@ function timedVoiceWords(
       const wordEnd = start + (end - start) * wordCursor / Math.max(1, totalWeight);
       result.push({
         text: word,
-        emotion: phraseEmotion,
+        emotion: responseEmotion,
         intensity: phrase.intensity,
         start: wordStart,
         end: Math.max(wordStart + 0.06, wordEnd),
@@ -390,7 +428,9 @@ function ModelVoice({
   return (
     <section className="model-voice" aria-label="Gemma response synchronized to measured emotion">
       <header>
-        <span>GEMMA VOICE</span>
+        <span>
+          GEMMA VOICE · {conversation.conditioning.mode === 'vector' ? 'VECTOR L28' : 'PROMPT'}
+        </span>
         <strong>{dominant ? `${EMOTION_LABELS[dominant]} · ${confidenceLabel(strength)}` : 'measured response'}</strong>
       </header>
       <p>
@@ -462,7 +502,6 @@ export function App() {
   const [prosodySignal, setProsodySignal] = useState<SignalView>(latestProsodyRef.current);
   const [userCrowd, setUserCrowd] = useState<CrowdView>(() => currentCrowdView('user'));
   const [modelCrowd, setModelCrowd] = useState<CrowdView>(() => currentCrowdView('model'));
-  const [activePhrase, setActivePhrase] = useState(-1);
   const [playbackTime, setPlaybackTime] = useState(0);
   const [playbackDuration, setPlaybackDuration] = useState(0);
   const [needsPlay, setNeedsPlay] = useState(false);
@@ -473,6 +512,7 @@ export function App() {
   const [judgeProofActive, setJudgeProofActive] = useState(false);
   const [counterfactualProof, setCounterfactualProof] = useState<CounterfactualProof | null>(null);
   const [proofStage, setProofStage] = useState<ProofStage>(null);
+  const [conditioningMode, setConditioningMode] = useState<ConditioningMode>('prompt');
 
   useEffect(() => {
     let frame = 0;
@@ -714,7 +754,6 @@ export function App() {
     clearDirectEmotion('user');
     clearDirectEmotion('model');
     activePhraseRef.current = -1;
-    setActivePhrase(-1);
     setConversation(null);
     setCounterfactualProof(null);
     setProofStage(null);
@@ -746,6 +785,7 @@ export function App() {
     prosodyOverride?: { scores: EmotionScores; confidence: number },
     faceOverride?: { scores: EmotionScores; confidence: number } | null
   ): ConversationRequest => {
+    payload.conditioning_mode = conditioningMode;
     // `undefined` means a typed turn may use the current live frame. An
     // explicit `null` means a recorded take contained no detected face and
     // must not fall back to a stale pre-recording frame.
@@ -760,7 +800,7 @@ export function App() {
       payload.prosody_confidence = prosody.confidence;
     }
     return payload;
-  }, []);
+  }, [conditioningMode]);
 
   const presentConversation = useCallback((result: ConversationResponse) => {
     // The backend result is already the authoritative fusion of language,
@@ -797,7 +837,6 @@ export function App() {
     clearDirectEmotion('user');
     clearDirectEmotion('model');
     activePhraseRef.current = -1;
-    setActivePhrase(-1);
     setConversation(null);
     setCounterfactualProof(null);
     setProofStage(null);
@@ -850,7 +889,6 @@ export function App() {
     clearDirectEmotion('user');
     clearDirectEmotion('model');
     activePhraseRef.current = -1;
-    setActivePhrase(-1);
     const audioOnly = new MediaStream(stream.getAudioTracks());
     let recorder: MediaRecorder;
     try {
@@ -964,7 +1002,6 @@ export function App() {
     clearDirectEmotion('user');
     clearDirectEmotion('model');
     activePhraseRef.current = -1;
-    setActivePhrase(-1);
     setConversation(null);
     setCounterfactualProof(null);
     setNeedsPlay(false);
@@ -976,7 +1013,11 @@ export function App() {
     let baseline: ConversationResponse | null = null;
     try {
       baseline = await converse(
-        { transcript, synthesize_speech: false },
+        {
+          transcript,
+          synthesize_speech: false,
+          conditioning_mode: conditioningMode,
+        },
         controller.signal
       );
       if (requestIdRef.current !== requestId) return;
@@ -996,6 +1037,7 @@ export function App() {
           prosody_scores: injected.prosody,
           prosody_confidence: injected.prosodyConfidence,
           synthesize_speech: true,
+          conditioning_mode: conditioningMode,
         },
         controller.signal
       );
@@ -1027,6 +1069,7 @@ export function App() {
     }
   }, [
     judgeProofActive,
+    conditioningMode,
     phase,
     presentConversation,
     proofStage,
@@ -1057,14 +1100,12 @@ export function App() {
       const index = phraseForTime(conversation.phrases, audio.currentTime, audio.duration);
       if (index >= 0 && index !== activePhraseRef.current) {
         activePhraseRef.current = index;
-        setActivePhrase(index);
-        // A weak phrase carries the strongest measured turn tone instead of
-        // flashing the crowd back to neutral. The UI labels that carry.
-        const phrase = conversation.phrases[index];
-        showModelPhrase(phrase?.emotion ? phrase : representative?.phrase);
+        // The entire reply keeps one overall emotion; phrase boundaries only
+        // advance the synchronized words and motion intensity.
+        showModelPhrase(representative?.phrase);
       }
       const phrase = conversation.phrases[index];
-      const expressionPhrase = phrase?.emotion ? phrase : representative?.phrase;
+      const expressionPhrase = phrase ?? representative?.phrase;
       const now = performance.now();
       if (now - lastWordFrame >= 65) {
         setPlaybackTime(audio.currentTime);
@@ -1102,7 +1143,6 @@ export function App() {
       }
       showModelPhrase(representative?.phrase);
       activePhraseRef.current = -1;
-      setActivePhrase(-1);
       setPhase('holding');
       holdTimer = window.setTimeout(() => {
         setPhase('complete');
@@ -1116,7 +1156,6 @@ export function App() {
       const hasMeasuredEmotion = Boolean(representative);
       showModelPhrase(representative?.phrase);
       activePhraseRef.current = -1;
-      setActivePhrase(-1);
       setVoiceNotice(
         hasMeasuredEmotion
           ? 'The MP3 could not be loaded. The response and measured phrase emotion remain visible.'
@@ -1179,49 +1218,57 @@ export function App() {
 
   const busy = phase === 'transcribing' || phase === 'thinking' || phase === 'requesting';
   const textLocked = busy || recording || phase === 'speaking' || phase === 'holding' || phase === 'awaiting-audio';
-  const modelPhrase = activePhrase >= 0 ? conversation?.phrases[activePhrase] : null;
   const representativeModelPhrase = useMemo(
     () => strongestEmotionalPhrase(conversation?.phrases ?? [])?.phrase ?? null,
     [conversation]
   );
-  const activeEmotionalPhrase = modelPhrase?.emotion ? modelPhrase : null;
-  const displayedModelPhrase = activeEmotionalPhrase ?? (
-    modelCrowd.active ? representativeModelPhrase : null
-  );
+  const displayedModelPhrase = modelCrowd.active ? representativeModelPhrase : null;
   const displayedModelEmotion = displayedModelPhrase
     ? displayedModelPhrase.emotion
     : modelCrowd.dominant;
   const displayedModelStrength = displayedModelPhrase
     ? displayedModelPhrase.intensity
     : modelCrowd.confidence;
+  const displayedModelScores = displayedModelPhrase?.scores ?? modelCrowd.scores;
   const responseContext = conversation?.responseContext;
+  const vectorConditioning = conversation?.conditioning.mode === 'vector';
   const proofBaselineContext = counterfactualProof?.baseline.responseContext;
   const proofAdaptedContext = counterfactualProof?.adapted?.responseContext;
-  const proofBaselinePlan = proofBaselineContext?.strategy.replace('-', ' ').toUpperCase() ?? 'UNAVAILABLE';
-  const proofAdaptedPlan = proofAdaptedContext?.strategy.replace('-', ' ').toUpperCase() ?? (
+  const proofUsesVector = counterfactualProof?.baseline.conditioning.mode === 'vector';
+  const proofBaselinePlan = proofUsesVector
+    ? `L28 ${(proofBaselineContext?.dominant ?? 'mixed').toUpperCase()} VECTOR`
+    : proofBaselineContext?.strategy.replace('-', ' ').toUpperCase() ?? 'UNAVAILABLE';
+  const proofAdaptedPlan = proofUsesVector && proofAdaptedContext
+    ? `L28 ${(proofAdaptedContext.dominant ?? 'mixed').toUpperCase()} VECTOR`
+    : proofAdaptedContext?.strategy.replace('-', ' ').toUpperCase() ?? (
     proofStage === 'adapted' ? 'RUNNING…' : proofStage === 'failed' ? 'FAILED' : 'UNAVAILABLE'
   );
   const proofPlanChanged = Boolean(
     counterfactualProof?.adapted
-    && proofBaselineContext?.strategy
-    && proofAdaptedContext?.strategy
-    && proofBaselineContext.strategy !== proofAdaptedContext.strategy
+    && (
+      proofUsesVector
+        ? proofBaselinePlan !== proofAdaptedPlan
+        : proofBaselineContext?.strategy
+          && proofAdaptedContext?.strategy
+          && proofBaselineContext.strategy !== proofAdaptedContext.strategy
+    )
   );
   const proofReplyChanged = Boolean(
     counterfactualProof?.adapted
     && counterfactualProof.baseline.response.trim().replace(/\s+/g, ' ').toLowerCase()
       !== counterfactualProof.adapted.response.trim().replace(/\s+/g, ' ').toLowerCase()
   );
+  const proofChangeLabel = proofUsesVector ? 'VECTOR CHANGED' : 'PLAN CHANGED';
   const proofOutcomeCopy = !counterfactualProof?.adapted
     ? proofStage === 'failed'
       ? 'ADAPTED RUN FAILED · CONTROL PRESERVED · RETRY'
       : 'CONTROL CAPTURED · ADDING NONVERBAL CONTEXT…'
     : proofPlanChanged && proofReplyChanged
-      ? 'PLAN CHANGED · REPLY CHANGED'
+      ? `${proofChangeLabel} · REPLY CHANGED`
       : proofPlanChanged
-        ? 'PLAN CHANGED'
+        ? proofChangeLabel
         : proofReplyChanged
-          ? 'REPLY CHANGED WITH THE SAME PLAN'
+          ? `REPLY CHANGED WITH THE SAME ${proofUsesVector ? 'VECTOR' : 'PLAN'}`
           : 'CONTEXT CONFIRMED THE SAME OUTCOME';
   const proofShiftCopy = proofAdaptedContext?.nonverbalShift !== null
     && proofAdaptedContext?.nonverbalShift !== undefined
@@ -1236,9 +1283,13 @@ export function App() {
       return `${label} READ ${(responseContext.sourceDominants[source] ?? 'MIXED').toUpperCase()}`;
     })
     .join(' · ') ?? '';
-  const strategyLabel = responseContext?.strategy.replace('-', ' ').toUpperCase() ?? '';
+  const strategyLabel = vectorConditioning
+    ? `LAYER 28 · ${conversation?.conditioning.targetTokens ?? 0} TOKENS`
+    : responseContext?.strategy.replace('-', ' ').toUpperCase() ?? '';
   const adaptationCopy = !responseContext
     ? ''
+    : vectorConditioning
+      ? `${(responseContext.dominant ?? 'MIXED').toUpperCase()} FUSED DIRECTION · ADDED TO THE FINAL USER SENTENCE · NO EMOTION LABELS OR SCORES IN THE PROMPT`
     : responseContext.effect === 'words-only'
       ? `WORDS SET THE CONTEXT · RESPONSE PLAN: ${strategyLabel}`
       : responseContext.effect === 'reinforced'
@@ -1266,6 +1317,9 @@ export function App() {
             || responseContext.effect === 'language-mixed'
           )
           ? `${confidenceLabel(responseContext.nonverbalShift)} DISTRIBUTION SHIFT`
+          : null,
+        vectorConditioning
+          ? `${confidenceLabel(conversation?.conditioning.appliedResidualRatio ?? 0)} RESIDUAL EDIT`
           : null,
       ].filter(Boolean).join(' · ')
     : '';
@@ -1399,6 +1453,7 @@ export function App() {
               <p>{conversation.transcript}</p>
             </aside>
           ) : null}
+          <EmotionHistogram scores={userCrowd.scores} active={userCrowd.active} />
         </CrowdPane>
 
         <div className="mirror-axis" aria-hidden="true">
@@ -1497,6 +1552,10 @@ export function App() {
               onPlay={playResponse}
             />
           ) : null}
+          <EmotionHistogram
+            scores={displayedModelScores}
+            active={Boolean(displayedModelEmotion)}
+          />
           <audio
             ref={audioRef}
             hidden
@@ -1518,6 +1577,25 @@ export function App() {
           <label className="sr-only" htmlFor="typed-message">
             {judgeProofActive ? 'Pick the missing human context' : 'Typed fallback'}
           </label>
+          <div className="conditioning-control">
+            <span>AFFECT CHANNEL</span>
+            <button
+              type="button"
+              className={`conditioning-switch${conditioningMode === 'vector' ? ' is-vector' : ''}`}
+              role="switch"
+              aria-checked={conditioningMode === 'vector'}
+              aria-label="Use layer-28 emotion-vector conditioning instead of emotion text in the prompt"
+              title={conditioningMode === 'vector'
+                ? 'The fused emotion direction is injected into the final user sentence at layer 28.'
+                : 'Emotion context is written into Gemma’s prompt.'}
+              disabled={textLocked}
+              onClick={() => setConditioningMode((current) => current === 'prompt' ? 'vector' : 'prompt')}
+            >
+              <span>PROMPT</span>
+              <i aria-hidden="true"><b /></i>
+              <span>VECTOR</span>
+            </button>
+          </div>
           {judgeProofActive ? (
             <div className="demo-emotion-rail" aria-label="Injected emotion preset">
               {SHARED_EMOTIONS.map((emotion) => (

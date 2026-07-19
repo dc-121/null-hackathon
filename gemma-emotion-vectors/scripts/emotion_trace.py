@@ -28,6 +28,7 @@ MODEL_ID = "google/gemma-4-E4B-it"
 VECTOR_REPO = "rain1955/emotion-vector-replication"
 VECTOR_FILE = "results/emotion_vectors.npz"
 TARGET_LAYER = 28
+ACTIVATION_STEERING_RESIDUAL_RATIO = 0.20
 
 ELEVENLABS_API = "https://api.elevenlabs.io"
 DEFAULT_TTS_MODEL = "eleven_v3"
@@ -104,6 +105,26 @@ class TraceResult:
     neutral_std: torch.Tensor
     generation_seconds: float
     replay_seconds: float
+    steering: SteeringTrace | None = None
+
+
+@dataclass(frozen=True)
+class ActivationSteering:
+    """A normalized layer-28 direction plus its uncertainty-aware magnitude."""
+
+    direction: torch.Tensor
+    direction_magnitude: float
+    target_text: str
+    centered_weights: dict[str, float]
+    residual_ratio: float = ACTIVATION_STEERING_RESIDUAL_RATIO
+
+
+@dataclass(frozen=True)
+class SteeringTrace:
+    target_tokens: int
+    direction_magnitude: float
+    max_residual_ratio: float
+    applied_residual_ratio: float
 
 
 @dataclass(frozen=True)
@@ -175,6 +196,137 @@ def parse_args() -> argparse.Namespace:
 def visible_token(tokenizer, token_id: int) -> str:
     value = tokenizer.decode([token_id], clean_up_tokenization_spaces=False)
     return value.replace("\n", "\\n").replace("\t", "\\t") or "<empty>"
+
+
+def build_activation_steering(
+    scores: dict[str, float],
+    confidence: float,
+    *,
+    names: list[str],
+    vectors: torch.Tensor,
+    target_text: str,
+    residual_ratio: float = ACTIVATION_STEERING_RESIDUAL_RATIO,
+) -> ActivationSteering:
+    """Blend centered emotion scores into one layer-28 steering direction.
+
+    Centering makes a uniform distribution produce no intervention. Confidence
+    scales the intervention before the direction is normalized, so weak or
+    conflicting sensor evidence remains a correspondingly weak residual edit.
+    """
+
+    if not target_text.strip():
+        raise ValueError("activation steering requires non-empty target text")
+    if not scores:
+        raise ValueError("activation steering requires emotion scores")
+    if not 0 <= confidence <= 1:
+        raise ValueError("activation steering confidence must be between 0 and 1")
+    if not 0 <= residual_ratio <= 1:
+        raise ValueError("activation steering residual ratio must be between 0 and 1")
+    missing = set(scores).difference(names)
+    if missing:
+        raise ValueError("missing activation vectors: " + ", ".join(sorted(missing)))
+    if vectors.ndim != 2 or vectors.shape[0] != len(names):
+        raise ValueError("activation vector matrix does not match emotion names")
+
+    uniform = 1.0 / len(scores)
+    centered_weights = {
+        name: (float(value) - uniform) * confidence
+        for name, value in scores.items()
+    }
+    direction = torch.zeros(vectors.shape[1], dtype=torch.float32)
+    source_vectors = vectors.detach().float().cpu()
+    for name, weight in centered_weights.items():
+        direction += source_vectors[names.index(name)] * weight
+    direction_magnitude = float(torch.linalg.vector_norm(direction))
+    if direction_magnitude > 1e-8:
+        direction = direction / direction_magnitude
+
+    return ActivationSteering(
+        direction=direction,
+        direction_magnitude=direction_magnitude,
+        target_text=target_text.strip(),
+        centered_weights=centered_weights,
+        residual_ratio=residual_ratio,
+    )
+
+
+def target_token_positions(
+    rendered_prompt: str,
+    target_text: str,
+    offsets: list[tuple[int, int]],
+) -> list[int]:
+    """Return tokens overlapping the final occurrence of target text."""
+
+    target_start = rendered_prompt.rfind(target_text)
+    if target_start < 0:
+        raise ValueError("steering target was not found in the rendered prompt")
+    target_end = target_start + len(target_text)
+    positions = [
+        index
+        for index, (start, end) in enumerate(offsets)
+        if end > start and start < target_end and end > target_start
+    ]
+    if not positions:
+        raise ValueError("steering target did not overlap any prompt tokens")
+    return positions
+
+
+def apply_activation_steering(
+    hidden: torch.Tensor,
+    positions: list[int],
+    steering: ActivationSteering,
+) -> tuple[torch.Tensor, float]:
+    """Add a norm-relative direction to selected residual-stream positions."""
+
+    if hidden.ndim != 3:
+        raise ValueError("expected batched residual-stream activations")
+    if not positions or steering.direction_magnitude <= 1e-8:
+        return hidden, 0.0
+    if max(positions) >= hidden.shape[1] or min(positions) < 0:
+        raise ValueError("steering token position is outside the activation sequence")
+    if steering.direction.numel() != hidden.shape[-1]:
+        raise ValueError("steering direction does not match activation width")
+
+    applied_ratio = steering.residual_ratio * min(
+        steering.direction_magnitude,
+        1.0,
+    )
+    position_index = torch.tensor(positions, device=hidden.device)
+    selected = hidden.index_select(1, position_index)
+    selected_norm = selected.float().norm(dim=-1, keepdim=True).to(selected.dtype)
+    unit_direction = steering.direction.to(
+        device=hidden.device,
+        dtype=hidden.dtype,
+    ).view(1, 1, -1)
+    updated = selected + unit_direction * selected_norm * applied_ratio
+    steered = hidden.clone()
+    steered.index_copy_(1, position_index, updated)
+    return steered, applied_ratio
+
+
+def _encode_steered_prompt(
+    prompt: str,
+    *,
+    tokenizer,
+    device: torch.device,
+    target_text: str,
+) -> tuple[dict[str, torch.Tensor], list[int]]:
+    messages = [{"role": "user", "content": prompt.strip()}]
+    rendered = tokenizer.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=False,
+    )
+    encoded = tokenizer(
+        rendered,
+        add_special_tokens=False,
+        return_offsets_mapping=True,
+        return_tensors="pt",
+    )
+    offsets_tensor = encoded.pop("offset_mapping")
+    offsets = [tuple(map(int, pair)) for pair in offsets_tensor[0].tolist()]
+    positions = target_token_positions(rendered, target_text, offsets)
+    return encoded.to(device), positions
 
 
 def load_runtime():
@@ -283,25 +435,70 @@ def analyze_prompt(
     neutral_mean: torch.Tensor,
     neutral_std: torch.Tensor,
     max_new_tokens: int,
+    activation_steering: ActivationSteering | None = None,
 ) -> TraceResult:
     generation_started = perf_counter()
     device = next(model.parameters()).device
 
     messages = [{"role": "user", "content": prompt.strip()}]
-    inputs = tokenizer.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        return_tensors="pt",
-        return_dict=True,
-    ).to(device)
+    steering_positions: list[int] = []
+    if activation_steering is None:
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            return_tensors="pt",
+            return_dict=True,
+        ).to(device)
+    else:
+        inputs, steering_positions = _encode_steered_prompt(
+            prompt,
+            tokenizer=tokenizer,
+            device=device,
+            target_text=activation_steering.target_text,
+        )
     prompt_length = inputs["input_ids"].shape[1]
 
-    with torch.inference_mode():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
+    steering_trace: SteeringTrace | None = None
+    steering_handle = None
+    if activation_steering is not None:
+        hook_state = {"applied": False, "ratio": 0.0}
+
+        def steer(_module, _inputs, output):
+            hidden = output[0] if isinstance(output, tuple) else output
+            if hook_state["applied"] or hidden.shape[1] != prompt_length:
+                return output
+            steered, applied_ratio = apply_activation_steering(
+                hidden,
+                steering_positions,
+                activation_steering,
+            )
+            hook_state["applied"] = True
+            hook_state["ratio"] = applied_ratio
+            if isinstance(output, tuple):
+                return (steered, *output[1:])
+            return steered
+
+        language_model = getattr(model.model, "language_model", model.model)
+        steering_handle = language_model.layers[TARGET_LAYER].register_forward_hook(
+            steer
+        )
+    try:
+        with torch.inference_mode():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+    finally:
+        if steering_handle is not None:
+            steering_handle.remove()
+    if activation_steering is not None:
+        steering_trace = SteeringTrace(
+            target_tokens=len(steering_positions),
+            direction_magnitude=activation_steering.direction_magnitude,
+            max_residual_ratio=activation_steering.residual_ratio,
+            applied_residual_ratio=float(hook_state["ratio"]),
         )
     generation_seconds = perf_counter() - generation_started
 
@@ -345,6 +542,7 @@ def analyze_prompt(
         neutral_std=neutral_std,
         generation_seconds=generation_seconds,
         replay_seconds=replay_seconds,
+        steering=steering_trace,
     )
 
 

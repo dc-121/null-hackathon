@@ -73,6 +73,13 @@ phrase timeline, all nine raw cosine scores, locally calibrated neutral
 z-scores, prompt-relative changes, normalized evidence shares, the exact v3
 tags, and streamed audio.
 
+The conversation experience also has a compact **Prompt / Vector** affect
+toggle. Prompt mode writes the fused affect context into Gemma's instructions.
+Experimental Vector mode keeps emotion labels and scores out of the prompt and
+injects their centered, confidence-weighted direction into the final user
+sentence at layer 28. Each response reports the actual target-token count and
+applied residual ratio.
+
 The terminal version remains available:
 
 ```bash

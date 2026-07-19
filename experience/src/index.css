@@ -555,13 +555,31 @@ button {
 
 .emotion-bars {
   position: absolute;
-  right: 22px;
-  bottom: 16px;
+  z-index: 14;
+  bottom: 76px;
   left: 22px;
   display: grid;
+  width: min(190px, calc(100% - 44px));
+  height: 74px;
+  padding: 8px 10px 7px;
   grid-template-columns: repeat(5, 1fr);
-  gap: 5px;
+  align-items: end;
+  gap: 7px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 12px 34px rgba(35, 39, 46, 0.11);
+  backdrop-filter: blur(14px);
   transition: opacity 250ms ease;
+}
+
+.pane--model .emotion-bars {
+  right: 22px;
+  left: auto;
+}
+
+.pane--user .emotion-bars {
+  right: auto;
 }
 
 .emotion-bars.is-muted {
@@ -570,30 +588,49 @@ button {
 
 .emotion-meter {
   display: grid;
-  grid-template-rows: 4px auto;
-  gap: 4px;
+  height: 58px;
+  grid-template-rows: 34px auto auto;
+  justify-items: center;
+  gap: 2px;
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.07);
-  border-radius: 99px 99px 0 0;
-  overflow: hidden;
 }
 
 .emotion-meter i {
-  display: block;
-  min-width: 1px;
-  height: 4px;
-  background: currentColor;
+  grid-row: 1;
+  display: flex;
+  align-items: flex-end;
+  width: 7px;
+  height: 34px;
+  overflow: hidden;
+  background: color-mix(in srgb, currentColor 13%, transparent);
   border-radius: 99px;
-  transition: width 180ms linear;
+}
+
+.emotion-meter i b {
+  display: block;
+  width: 100%;
+  min-height: 1px;
+  background: currentColor;
+  border-radius: inherit;
+  transition: height 180ms linear;
 }
 
 .emotion-meter small {
-  padding-top: 1px;
+  grid-row: 3;
   color: var(--dim);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.45rem;
-  letter-spacing: 0.05em;
+  font-size: 0.38rem;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
+}
+
+.emotion-meter em {
+  grid-row: 2;
+  color: currentColor;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.4rem;
+  font-style: normal;
+  font-weight: 700;
 }
 
 .emotion-meter--happy { color: var(--happy); }
@@ -1238,7 +1275,6 @@ button {
   border-left: 0;
 }
 
-.app-shell.is-proof-mode .emotion-bars,
 .app-shell.is-proof-mode .proof-vector-trace,
 .app-shell.is-proof-mode .proof-announcement,
 .app-shell.is-proof-mode .typed-fallback > label {
@@ -1595,8 +1631,15 @@ button {
   }
 
   .emotion-bars {
-    right: 14px;
+    width: min(174px, calc(100% - 28px));
+  }
+
+  .pane--user .emotion-bars {
     left: 14px;
+  }
+
+  .pane--model .emotion-bars {
+    right: 14px;
   }
 
   .emotion-meter small {
@@ -1944,7 +1987,7 @@ button {
 .model-voice {
   position: absolute;
   z-index: 12;
-  bottom: 102px;
+  bottom: 166px;
   pointer-events: auto;
   background: rgba(255, 255, 255, 0.9);
   border: 1px solid var(--line);
@@ -2063,6 +2106,80 @@ button {
   gap: 6px;
   padding: 0;
   border: 0;
+}
+
+.floating-dock .conditioning-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  min-height: 19px;
+  padding: 0 3px;
+}
+
+.conditioning-control > span {
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.45rem;
+  letter-spacing: 0.1em;
+}
+
+.typed-fallback .conditioning-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  color: #747982;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.43rem;
+  letter-spacing: 0.06em;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+}
+
+.typed-fallback .conditioning-switch:disabled {
+  color: #a5a7aa;
+  background: transparent;
+}
+
+.conditioning-switch > span:last-child,
+.conditioning-switch.is-vector > span:first-child {
+  color: #a2a5aa;
+}
+
+.conditioning-switch > span:first-child,
+.conditioning-switch.is-vector > span:last-child {
+  color: #17191d;
+}
+
+.conditioning-switch > i {
+  position: relative;
+  width: 25px;
+  height: 13px;
+  background: #d9d8d3;
+  border: 1px solid #c9c8c2;
+  border-radius: 999px;
+}
+
+.conditioning-switch > i > b {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 7px;
+  height: 7px;
+  background: #17191d;
+  border-radius: 50%;
+  transition: transform 150ms ease;
+}
+
+.conditioning-switch.is-vector > i {
+  background: color-mix(in srgb, var(--acid) 42%, white);
+  border-color: color-mix(in srgb, var(--acid) 72%, #b9b8b2);
+}
+
+.conditioning-switch.is-vector > i > b {
+  transform: translateX(12px);
 }
 
 .floating-dock .typed-fallback input,
