@@ -280,22 +280,37 @@ function phraseForTime(
 
 interface TimedVoiceWord {
   text: string;
-  emotion: Emotion | null;
+  emotion: Emotion;
   intensity: number;
   start: number;
   end: number;
 }
 
+function strongestDisplayEmotion(
+  phrase: Pick<ConversationPhrase, 'emotion' | 'scores'>,
+  fallback: Emotion | null
+): Emotion {
+  // Voice directions keep their evidence threshold, but the word ribbon is a
+  // forced-choice visualization: every phrase displays its strongest shared
+  // emotion even when that winner was too weak to drive the generated voice.
+  return phrase.emotion
+    ?? dominantEmotion(phrase.scores)
+    ?? fallback
+    ?? SHARED_EMOTIONS[0];
+}
+
 function timedVoiceWords(
   phrases: ConversationPhrase[],
   response: string,
-  duration: number
+  duration: number,
+  fallbackEmotion: Emotion | null
 ): TimedVoiceWord[] {
   const sourcePhrases = phrases.length
     ? phrases
     : [{
         text: response,
         emotion: null,
+        scores: ZERO_SCORES,
         intensity: 0,
         startSeconds: 0,
         endSeconds: duration || Math.max(2, response.length / 14),
@@ -311,6 +326,7 @@ function timedVoiceWords(
   const result: TimedVoiceWord[] = [];
 
   sourcePhrases.forEach((phrase) => {
+    const phraseEmotion = strongestDisplayEmotion(phrase, fallbackEmotion);
     const fallbackStart = fallbackDuration * characterCursor / totalCharacters;
     characterCursor += Math.max(1, phrase.text.length);
     const fallbackEnd = fallbackDuration * characterCursor / totalCharacters;
@@ -331,7 +347,7 @@ function timedVoiceWords(
       const wordEnd = start + (end - start) * wordCursor / Math.max(1, totalWeight);
       result.push({
         text: word,
-        emotion: phrase.emotion,
+        emotion: phraseEmotion,
         intensity: phrase.intensity,
         start: wordStart,
         end: Math.max(wordStart + 0.06, wordEnd),
@@ -361,8 +377,13 @@ function ModelVoice({
   onPlay: () => void;
 }) {
   const words = useMemo(
-    () => timedVoiceWords(conversation.phrases, conversation.response, playbackDuration),
-    [conversation, playbackDuration]
+    () => timedVoiceWords(
+      conversation.phrases,
+      conversation.response,
+      playbackDuration,
+      dominant
+    ),
+    [conversation, playbackDuration, dominant]
   );
   const speaking = phase === 'speaking';
   const finished = phase === 'holding' || phase === 'complete';
@@ -381,7 +402,7 @@ function ModelVoice({
               key={`${index}-${word.text}`}
               className={`model-word${active ? ' is-active' : ''}${spoken ? ' is-spoken' : ''}`}
               style={{
-                '--word-emotion': word.emotion ? `var(--${word.emotion})` : 'var(--fg)',
+                '--word-emotion': `var(--${word.emotion})`,
                 '--word-strength': `${Math.round(word.intensity * 100)}%`,
               } as CSSProperties}
             >
